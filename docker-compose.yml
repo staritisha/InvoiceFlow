@@ -1,0 +1,39 @@
+services:
+  db:
+    image: postgres:16
+    container_name: invoiceflow_db
+    environment:
+      POSTGRES_DB: invoiceflow_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  backend:
+    build: ./backend
+    container_name: invoiceflow_backend
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@db:5432/invoiceflow_db
+      EMAIL_HOST: smtp.gmail.com
+      EMAIL_PORT: 587
+      EMAIL_USERNAME: ""
+      EMAIL_PASSWORD: ""
+      EMAIL_FROM: ""
+      OPENAI_API_KEY: ""
+    depends_on:
+      - db
+
+  frontend:
+    build: ./frontend
+    container_name: invoiceflow_frontend
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:
