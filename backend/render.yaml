@@ -1,0 +1,30 @@
+services:
+  - type: web
+    name: invoiceflow-backend
+    runtime: python
+
+    buildCommand: pip install -r requirements.txt
+
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+
+      - key: SECRET_KEY
+        sync: false
+
+      - key: EMAIL_HOST
+        sync: false
+
+      - key: EMAIL_PORT
+        sync: false
+
+      - key: EMAIL_USERNAME
+        sync: false
+
+      - key: EMAIL_PASSWORD
+        sync: false
+
+      - key: EMAIL_FROM
+        sync: false
