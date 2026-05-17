@@ -7,6 +7,7 @@ class Settings(BaseSettings):
     app_name: str = "InvoiceFlow API"
     debug: bool = True
     database_url: str
+    SECRET_KEY: str
 
     # Email config
     email_host: str | None = None

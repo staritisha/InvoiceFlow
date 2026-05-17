@@ -12,8 +12,12 @@ from sqlalchemy.orm import Session
 from app.database import SessionLocal
 
 from app import models
+from app.config import settings
+SECRET_KEY = settings.SECRET_KEY
 
-SECRET_KEY = "change-this-secret-key-later"
+
+
+
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
 

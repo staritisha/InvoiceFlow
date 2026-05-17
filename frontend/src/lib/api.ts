@@ -33,11 +33,11 @@ export const auth = {
       }),
     }),
 
-  register: (data: { full_name: string; email: string; password: string }) =>
-    request("/auth/register", {
-      method: "POST",
-      body: JSON.stringify(data),
-    }),
+login: (email: string, password: string) =>
+  request("/auth/login", {
+    method: "POST",
+    body: JSON.stringify({ email, password }),
+  }),  
 };
 
 export type Customer = {
@@ -200,37 +200,24 @@ export const invoices = {
   exportCsv: () => `${BASE_URL}/exports/invoices-csv`,
 };
 
-export type DashboardAnalytics = {
-  total_customers: number;
-  total_invoices: number;
-  paid_invoices: number;
-  draft_invoices: number;
-  overdue_invoices: number;
-  total_revenue: number;
-  unpaid_amount: number;
-  pending_amount: number;
-  recent_invoices: Invoice[];
-  monthly_revenue: { month: string; amount: number }[];
-};
-
 export const dashboard = {
   analytics: async () => {
-    const summary = await request("/dashboard/summary");
-    const invoiceList = await invoices.list();
+    const [summary, invoiceList, monthlyData] = await Promise.all([
+      request("/dashboard/summary"),
+      invoices.list(),
+      request("/dashboard/monthly-revenue"),
+    ]);
 
     return {
       ...summary,
       pending_amount: summary.unpaid_amount || 0,
       recent_invoices: invoiceList.slice(-5).reverse(),
-      monthly_revenue: [
-        { month: "Jan", amount: 0 },
-        { month: "Feb", amount: 0 },
-        { month: "Mar", amount: 0 },
-        { month: "Apr", amount: summary.total_revenue || 0 },
-      ],
+      monthly_revenue: monthlyData,
     };
   },
 };
+
+
 
 export type RecurringCreate = {
   customer_id: number;

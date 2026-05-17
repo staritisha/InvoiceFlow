@@ -1,10 +1,15 @@
 from pydantic import BaseModel, EmailStr
+from decimal import Decimal
 
 
 class UserCreate(BaseModel):
     full_name: str
     email: EmailStr
     password: str
+
+class UserLogin(BaseModel):
+    email: EmailStr
+    password: str    
 
 
 class UserResponse(BaseModel):
@@ -48,7 +53,8 @@ class InvoiceCreate(BaseModel):
     customer_id: int
     due_date: datetime | None = None
     status: str = "draft"
-    total_amount: int
+    total_amount: Decimal
+
     notes: str | None = None
 
 
@@ -60,7 +66,8 @@ class InvoiceResponse(BaseModel):
     issue_date: datetime | None
     due_date: datetime | None
     status: str
-    total_amount: int
+    total_amount: Decimal
+
     notes: str | None
 
     class Config:
@@ -78,7 +85,7 @@ class ReminderResponse(BaseModel):
 class RecurringBillingCreate(BaseModel):
     customer_id: int
     title: str
-    amount: int
+    amount: Decimal
     frequency: str
     next_billing_date: datetime
     is_active: bool = True
@@ -101,7 +108,7 @@ class InvoiceItemCreate(BaseModel):
     invoice_id: int
     description: str
     quantity: int
-    unit_price: int
+    unit_price: Decimal
 
 
 class InvoiceItemResponse(BaseModel):
@@ -109,8 +116,9 @@ class InvoiceItemResponse(BaseModel):
     invoice_id: int
     description: str
     quantity: int
-    unit_price: int
-    total_price: int
+    unit_price: Decimal
+    total_price: Decimal
+
 
     class Config:
         from_attributes = True
@@ -121,3 +129,7 @@ class AIFollowupResponse(BaseModel):
     tone: str
     subject: str
     message: str
+
+class UserLogin(BaseModel):
+    email: EmailStr
+    password: str    

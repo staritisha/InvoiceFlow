@@ -1,6 +1,20 @@
-.env
+# Python
 venv/
-node_modules/
 __pycache__/
 *.pyc
+*.pyo
+.env
+
+# Node
+node_modules/
+.next/
+*.log
+
+# Mac
+.DS_Store
+__MACOSX/
+
+# Generated files
 *.csv
+*.pdf
+alembic/versions/*.pyc
