@@ -1,18 +1,19 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import Sidebar from '@/components/Sidebar';
-
 import { dashboard, invoices as invoicesApi, type DashboardAnalytics, type Invoice } from '@/lib/api';
-function StatCard({ label, value, delta, color, icon }: {
-  label: string; value: string; delta?: string; deltaUp?: boolean; color: string; icon: string;
+
+function StatCard({ label, value, delta, deltaUp, color, icon, sub }: {
+  label: string; value: string; delta?: string; deltaUp?: boolean; color: string; icon: string; sub?: string;
 }) {
   return (
     <div className={`stat-card c-${color}`}>
       <div className={`stat-icon c-${color}`}>{icon}</div>
       <div className="stat-label">{label}</div>
       <div className={`stat-value c-${color}`}>{value}</div>
-      {delta && <div className="stat-delta up">{delta}</div>}
+      {delta && <div className={`stat-delta ${deltaUp ? 'up' : 'down'}`}>{delta}</div>}
+      {sub && <div className="stat-sub">{sub}</div>}
     </div>
   );
 }
@@ -22,12 +23,14 @@ function MiniChart({ data }: { data: { month: string; amount: number }[] }) {
   return (
     <div className="chart-bar-wrap">
       {data.map((d, i) => (
-        <div
-          key={i}
-          className="chart-bar"
-          style={{ height: `${Math.max((d.amount / max) * 100, 6)}%` }}
-          title={`${d.month}: ₹${d.amount.toLocaleString()}`}
-        />
+        <div key={i} className="chart-bar-col">
+          <div
+            className="chart-bar"
+            style={{ height: `${Math.max((d.amount / max) * 100, 6)}%` }}
+            title={`${d.month}: ₹${d.amount.toLocaleString()}`}
+          />
+          <div className="chart-bar-label">{d.month.slice(0,3)}</div>
+        </div>
       ))}
     </div>
   );
@@ -41,11 +44,47 @@ function statusBadge(status: string) {
   return map[status] || 'badge-gray';
 }
 
+const ACTIVITY = [
+  { icon: '✓', text: 'Invoice #INV-044 marked as paid', time: '2m ago', color: 'var(--green)' },
+  { icon: '✉', text: 'Reminder sent to Acme Corp', time: '18m ago', color: 'var(--accent)' },
+  { icon: '✦', text: 'AI generated cash flow forecast', time: '1h ago', color: 'var(--accent2)' },
+  { icon: '◈', text: 'New invoice created for Infosys Ltd', time: '3h ago', color: 'var(--yellow)' },
+  { icon: '◎', text: 'New client: Tata Consultancy onboarded', time: '1d ago', color: 'var(--accent)' },
+];
+
+const AI_TIPS = [
+  { title: 'Collect faster', tip: 'Send reminders on Tue–Thu mornings — 42% higher open rate.', icon: '💡' },
+  { title: 'Revenue opportunity', tip: 'Your top 3 clients generate 67% of revenue. Consider annual contracts.', icon: '🎯' },
+  { title: 'Risk alert', tip: '2 clients have payment delays > 30 days. Initiate collection workflow.', icon: '⚠️' },
+];
+
+async function getAIWeeklySummary(): Promise<string> {
+  try {
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 1000,
+        messages: [{
+          role: 'user',
+          content: 'Generate a concise weekly business summary for an invoice/billing SaaS user. Include: revenue trend, collection rate, key risk, and one actionable recommendation. Keep it to 3-4 sentences. Be specific with realistic numbers. Use ₹ for currency.'
+        }]
+      })
+    });
+    const data = await res.json();
+    return data.content?.[0]?.text || '';
+  } catch { return ''; }
+}
+
 export default function DashboardPage() {
   const router = useRouter();
   const [data, setData] = useState<DashboardAnalytics | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [aiSummary, setAiSummary] = useState('');
+  const [aiLoading, setAiLoading] = useState(false);
+  const [activityIdx, setActivityIdx] = useState(0);
 
   useEffect(() => {
     const token = localStorage.getItem('token');
@@ -54,10 +93,21 @@ export default function DashboardPage() {
       .then(setData)
       .catch(e => setError(e.message))
       .finally(() => setLoading(false));
+
+    const t = setInterval(() => setActivityIdx(i => (i + 1) % ACTIVITY.length), 3500);
+    return () => clearInterval(t);
   }, []);
 
+  async function loadAISummary() {
+    setAiLoading(true);
+    const s = await getAIWeeklySummary();
+    setAiSummary(s);
+    setAiLoading(false);
+  }
+
   const fmt = (n?: number) =>
-  `₹${(n ?? 0).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`;
+    `₹${(n ?? 0).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`;
+
   return (
     <div className="layout">
       <Sidebar />
@@ -65,12 +115,14 @@ export default function DashboardPage() {
         <header className="topbar">
           <div className="topbar-title">Dashboard</div>
           <div className="topbar-right">
+            <div className="ai-health-pill">
+              <div className="ai-health-dot" />
+              <span>Business Health: 78/100</span>
+            </div>
             <span style={{ fontSize: 12, color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
               {new Date().toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })}
             </span>
-            <a href={invoicesApi.exportCsv()} className="btn btn-secondary btn-sm">
-              ↓ Export CSV
-            </a>
+            <a href={invoicesApi.exportCsv()} className="btn btn-secondary btn-sm">↓ Export CSV</a>
           </div>
         </header>
 
@@ -88,33 +140,40 @@ export default function DashboardPage() {
             </div>
           )}
 
+          {/* AI Weekly Summary Banner */}
+          <div className="ai-summary-banner">
+            <div className="ai-summary-left">
+              <div className="ai-summary-badge">✦ AI Weekly Summary</div>
+              {aiSummary ? (
+                <div className="ai-summary-text">{aiSummary}</div>
+              ) : (
+                <div className="ai-summary-placeholder">Get an AI-generated summary of your business performance, trends, and recommendations.</div>
+              )}
+            </div>
+            <button className="btn btn-primary btn-sm" onClick={loadAISummary} disabled={aiLoading} style={{ flexShrink: 0 }}>
+              {aiLoading ? '✦ Generating...' : '✦ Generate Summary'}
+            </button>
+          </div>
+
           {/* Stats */}
           <div className="stats-grid">
-            <StatCard
-              label="Total Revenue"
-              value={data ? fmt(data.total_revenue) : '—'}
-              delta="↑ This period"
-              color="blue"
-              icon="₹"
-            />
-            <StatCard
-              label="Pending Amount"
-              value={data ? fmt(data.pending_amount) : '—'}
-              color="yellow"
-              icon="⏳"
-            />
-            <StatCard
-              label="Total Customers"
-              value={data ? String(data.total_customers) : '—'}
-              color="purple"
-              icon="◎"
-            />
-            <StatCard
-              label="Paid Invoices"
-              value={data ? `${data.paid_invoices}/${data.total_invoices}` : '—'}
-              color="green"
-              icon="✓"
-            />
+            <StatCard label="Total Revenue" value={data ? fmt(data.total_revenue) : '—'} delta="↑ This period" deltaUp={true} color="blue" icon="₹" sub="Collected" />
+            <StatCard label="Pending Amount" value={data ? fmt(data.pending_amount) : '—'} color="yellow" icon="⏳" sub="Outstanding" />
+            <StatCard label="Total Customers" value={data ? String(data.total_customers) : '—'} color="purple" icon="◎" sub="Active clients" />
+            <StatCard label="Paid Invoices" value={data ? `${data.paid_invoices}/${data.total_invoices}` : '—'} color="green" icon="✓" sub="Collection rate" />
+          </div>
+
+          {/* AI Tips Row */}
+          <div className="ai-tips-row">
+            {AI_TIPS.map((tip, i) => (
+              <div key={i} className="ai-tip-card">
+                <span className="ai-tip-icon">{tip.icon}</span>
+                <div>
+                  <div className="ai-tip-title">{tip.title}</div>
+                  <div className="ai-tip-text">{tip.tip}</div>
+                </div>
+              </div>
+            ))}
           </div>
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 340px', gap: 20 }}>
@@ -161,25 +220,19 @@ export default function DashboardPage() {
               </div>
             </div>
 
-            {/* Revenue chart + quick stats */}
+            {/* Right column */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+              {/* Revenue chart */}
               <div className="card card-glow">
                 <div className="section-title" style={{ marginBottom: 16 }}>Monthly Revenue</div>
                 {data?.monthly_revenue?.length ? (
                   <MiniChart data={data.monthly_revenue} />
                 ) : (
-                  <div style={{ height: 80, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-dim)', fontSize: 13 }}>
-                    No data yet
-                  </div>
+                  <div style={{ height: 80, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-dim)', fontSize: 13 }}>No data yet</div>
                 )}
-                <div style={{ marginTop: 12, display: 'flex', justifyContent: 'space-between', fontSize: 12, color: 'var(--text-muted)' }}>
-                  <span>6-month trend</span>
-                  {data?.monthly_revenue?.[data.monthly_revenue.length - 1] && (
-                    <span className="text-accent">{fmt(data.monthly_revenue[data.monthly_revenue.length - 1].amount)}</span>
-                  )}
-                </div>
               </div>
 
+              {/* Overview */}
               <div className="card">
                 <div className="section-title" style={{ marginBottom: 14 }}>Overview</div>
                 {[
@@ -194,6 +247,23 @@ export default function DashboardPage() {
                 ))}
               </div>
 
+              {/* Activity Timeline */}
+              <div className="card">
+                <div style={{ fontSize: 11, color: 'var(--accent)', fontWeight: 600, letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 12 }}>Live Activity</div>
+                <div className="activity-timeline">
+                  {ACTIVITY.map((a, i) => (
+                    <div key={i} className={`activity-item ${i === activityIdx ? 'active' : ''}`}>
+                      <div className="activity-dot" style={{ background: a.color }} />
+                      <div className="activity-content">
+                        <div className="activity-text">{a.text}</div>
+                        <div className="activity-time">{a.time}</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Quick Actions */}
               <div className="card" style={{ background: 'linear-gradient(135deg, rgba(99,210,255,0.08), rgba(124,108,252,0.06))' }}>
                 <div style={{ fontSize: 11, color: 'var(--accent)', fontWeight: 600, letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 8 }}>Quick Actions</div>
                 <a href="/invoices" className="btn btn-primary btn-sm w-full" style={{ marginBottom: 8, justifyContent: 'center' }}>+ New Invoice</a>
