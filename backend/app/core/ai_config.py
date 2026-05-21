@@ -6,15 +6,18 @@
 # ═══════════════════════════════════════════════════════════════════════════════
 
 from __future__ import annotations
-
 import logging
+import os
 import time
+from functools import lru_cache
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Optional
 
 from app.config import settings
+
+
 
 logger = logging.getLogger("invoiceflow.ai")
 
@@ -899,3 +902,125 @@ AI_MEMORY_CONFIG = {
     "persona_injection":   True,     # always prepend personality prompt
     "context_compression": True,     # compress history before sending
 }
+# ═══════════════════════════════════════════════════════════════════════════════
+# MASTER PROMPT LOADER (New Powerful .txt prompts)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@lru_cache(maxsize=10)
+def _load_master_prompt(filename: str) -> str:
+    """Load high-quality master prompt from app/ai/prompts/"""
+    prompt_path = os.path.join(
+        os.path.dirname(__file__), 
+        "../ai/prompts/", 
+        filename
+    )
+    
+    try:
+        with open(prompt_path, encoding="utf-8") as f:
+            content = f.read()
+        
+        # Replace common placeholders
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        content = content.replace("{today_date}", today)
+        
+        logger.info(f"✅ Master prompt loaded: {filename}")
+        return content
+        
+    except FileNotFoundError:
+        logger.error(f"❌ Master prompt file not found: {filename}")
+        return f"[ERROR] Prompt file {filename} not found."
+    except Exception as e:
+        logger.exception(f"Failed to load master prompt {filename}")
+        return f"[ERROR] Failed to load prompt: {str(e)}"
+
+
+def get_master_prompt(task: AITask) -> str:
+    """Return the powerful external master prompt for major tasks"""
+    mapping = {
+        AITask.INVOICE_GENERATION: "invoice_generation.txt",
+        AITask.BUSINESS_INSIGHTS: "business_insights.txt",
+        AITask.REMINDER_GENERATION: "reminder_generation.txt",
+        AITask.FINANCIAL_CHATBOT: "financial_chatbot.txt",
+    }
+    
+    filename = mapping.get(task)
+    if filename:
+        return _load_master_prompt(filename)
+    
+    # Fallback
+    logger.warning(f"No master prompt found for {task}. Using inline template.")
+    return get_prompt(task).system
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# UPDATED build_payload() - Supports both old + new master prompts
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def build_payload(
+    task: str | AITask,
+    context: dict,
+    provider: Optional[str] = None,
+    override_temperature: Optional[float] = None,
+    conversation_history: Optional[list[dict]] = None,
+    use_master_prompt: bool = True,          # ← New parameter
+) -> dict:
+    """
+    Enhanced build_payload that prefers master .txt prompts for key tasks.
+    """
+    if isinstance(task, AITask):
+        task = task.value
+
+    cfg = get_provider(provider)
+    template = get_prompt(task)
+    model = cfg.model_for(task)
+    temp = override_temperature if override_temperature is not None else TEMPERATURE_PROFILES.get(task, 0.7)
+
+    # Use Master Prompt for major features
+    if use_master_prompt and task in {
+        AITask.INVOICE_GENERATION.value,
+        AITask.BUSINESS_INSIGHTS.value,
+        AITask.REMINDER_GENERATION.value,
+        AITask.FINANCIAL_CHATBOT.value
+    }:
+        system_content = get_master_prompt(AITask(task))
+        user_content = json.dumps(context, default=str, ensure_ascii=False)
+    else:
+        # Fallback to old inline prompts
+        system_content = build_system_prompt(task)
+        user_content = render_user_prompt(task, context)
+
+    messages: list[dict] = [{"role": "system", "content": system_content}]
+
+    if conversation_history:
+        messages.extend(conversation_history)
+
+    messages.append({"role": "user", "content": user_content})
+    messages = optimize_context(messages)
+
+    payload: dict[str, Any] = {
+        "model": model,
+        "messages": messages,
+        "temperature": temp,
+        "max_tokens": min(template.max_tokens * 2, cfg.max_tokens, 4096),
+        "top_p": cfg.top_p,
+    }
+
+    # Force JSON mode for structured tasks
+    if task in {AITask.INVOICE_GENERATION.value, AITask.BUSINESS_INSIGHTS.value, 
+                AITask.REMINDER_GENERATION.value, AITask.COMMAND_INTERPRET.value}:
+        if cfg.name == AIProvider.OPENAI:
+            payload["response_format"] = {"type": "json_object"}
+
+    return payload
+
+# Quick helper for agents
+def create_ai_messages(task: AITask, user_content: str | dict, history: list = None) -> list[dict]:
+    system_prompt = get_master_prompt(task)
+    if isinstance(user_content, dict):
+        user_content = json.dumps(user_content, default=str, ensure_ascii=False)
+    
+    messages = [{"role": "system", "content": system_prompt}]
+    if history:
+        messages.extend(history)
+    messages.append({"role": "user", "content": user_content})
+    return messages
