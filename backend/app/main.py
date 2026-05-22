@@ -363,9 +363,14 @@ def _error_response(request: Request, status_code: int, message: str, detail: An
 
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
-    logger.warning(f"Validation error on {request.url.path}: {exc.errors()}")
-    return _error_response(request, 422, "Request validation failed", exc.errors())
-
+    safe_errors = []
+    for e in exc.errors():
+        safe_errors.append({
+            "field": " → ".join(str(l) for l in e.get("loc", [])),
+            "message": e.get("msg", "Invalid value"),
+        })
+    logger.warning(f"Validation error on {request.url.path}: {safe_errors}")
+    return _error_response(request, 422, "Request validation failed", safe_errors)
 
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException):
@@ -644,7 +649,7 @@ def login_user(user: UserLogin, db: Session = Depends(get_db)):
         "access_token": token,
         "refresh_token": refresh,
         "token_type": "bearer",
-        "expires_in": settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        "expires_in": settings.access_token_expire_minutes * 60,
     }
 
 

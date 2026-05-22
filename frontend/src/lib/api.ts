@@ -145,18 +145,6 @@ export const invoices = {
       }),
     });
 
-    for (const item of data.items) {
-      await request("/invoice-items", {
-        method: "POST",
-        body: JSON.stringify({
-          invoice_id: invoice.id,
-          description: item.description,
-          quantity: item.quantity,
-          unit_price: item.unit_price,
-        }),
-      });
-    }
-
     return invoice;
   },
 

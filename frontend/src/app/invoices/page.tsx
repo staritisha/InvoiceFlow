@@ -42,7 +42,7 @@ export default function InvoicesPage() {
       const [invs, custs] = await Promise.all([api.list(), custApi.list()]);
       setList(invs);
       setCustomerList(custs);
-    } catch { }
+    } catch (e) { console.error('Load failed:', e); }
     setLoading(false);
   }
 
