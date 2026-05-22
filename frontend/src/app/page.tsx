@@ -60,20 +60,16 @@ const AI_TIPS = [
 
 async function getAIWeeklySummary(): Promise<string> {
   try {
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
+    const token = localStorage.getItem('token');
+    const res = await fetch('http://127.0.0.1:8000/api/v1/ai/weekly-summary', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
-        max_tokens: 1000,
-        messages: [{
-          role: 'user',
-          content: 'Generate a concise weekly business summary for an invoice/billing SaaS user. Include: revenue trend, collection rate, key risk, and one actionable recommendation. Keep it to 3-4 sentences. Be specific with realistic numbers. Use ₹ for currency.'
-        }]
-      })
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
     });
     const data = await res.json();
-    return data.content?.[0]?.text || '';
+    return data.summary || '';
   } catch { return ''; }
 }
 

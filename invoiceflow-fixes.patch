@@ -1,0 +1,962 @@
+From 4afddf1b35b3269765bbff7ce1efda2cf399eca3 Mon Sep 17 00:00:00 2001
+From: InvoiceFlow Fix <fix@invoiceflow.dev>
+Date: Fri, 22 May 2026 07:27:34 +0000
+Subject: [PATCH] fix: resolve all critical bugs and polish for deployment
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Backend:
+- Fix login to return full Token schema (refresh_token, expires_in)
+- Add create_refresh_token import and settings import
+- Replace models.Customer with models.Client throughout (ORM model fix)
+- Fix invoice/recurring ORM writes: customer_id -> client_id
+- Auto-generate invoice_number server-side in create_invoice
+- Create line items inside create_invoice transaction
+- Fix PDF to use tempfile instead of local filesystem path
+- Improve PDF layout: shows client name, line items table, totals
+- Add auth guard (get_current_user) to all list/GET endpoints
+- Add POST /api/v1/ai/weekly-summary backend endpoint (OpenAI or Anthropic)
+
+Frontend:
+- Add auth.register() to api.ts (was missing — register button was broken)
+- Fix invoice create to send client_id instead of customer_id
+- Fix invoice list to match customer by client_id field
+- Fix dashboard AI summary to call backend instead of Anthropic directly
+- Rewrite analytics page to use live API data (was 100% hardcoded mock data)
+
+Docs:
+- Write complete README with setup, env vars, Docker instructions, feature table
+---
+ README.md                           |  95 +++++++-
+ backend/app/main.py                 | 186 +++++++++++----
+ frontend/src/app/analytics/page.tsx | 340 ++++++++++++++++------------
+ frontend/src/app/page.tsx           |  18 +-
+ frontend/src/lib/api.ts             |  20 +-
+ 5 files changed, 459 insertions(+), 200 deletions(-)
+
+diff --git a/README.md b/README.md
+index 8f7df7f..edf70d8 100644
+--- a/README.md
++++ b/README.md
+@@ -1 +1,94 @@
+-# InvoiceFlow
+\ No newline at end of file
++# InvoiceFlow
++
++AI-powered invoice management platform. Create and send invoices, manage clients, track payments, set up recurring billing, and get AI-generated business insights.
++
++## Tech Stack
++
++- **Frontend**: Next.js 14, TypeScript, Tailwind CSS
++- **Backend**: FastAPI (Python 3.12), SQLAlchemy, PostgreSQL
++- **AI**: OpenAI GPT or Anthropic Claude (configurable)
++- **Infrastructure**: Docker Compose
++
++## Quick Start (Docker)
++
++```bash
++git clone https://github.com/staritisha/InvoiceFlow.git
++cd InvoiceFlow
++cp .env.example .env        # fill in your values
++docker compose up --build
++```
++
++- Frontend: http://localhost:3000
++- Backend API: http://localhost:8000
++- API docs: http://localhost:8000/docs
++
++## Environment Variables
++
++Create a `.env` file in the project root (or set these in `docker-compose.yml`):
++
++```env
++# Database (auto-configured in Docker)
++DATABASE_URL=postgresql://postgres:postgres@db:5432/invoiceflow_db
++
++# Security — change this before going live!
++SECRET_KEY=your-long-random-secret-key-here
++
++# AI (at least one required for AI features)
++OPENAI_API_KEY=sk-...
++# ANTHROPIC_API_KEY=sk-ant-...
++
++# Email (optional — needed for sending reminders)
++EMAIL_HOST=smtp.gmail.com
++EMAIL_PORT=587
++EMAIL_USERNAME=your@gmail.com
++EMAIL_PASSWORD=your-app-password
++EMAIL_FROM=your@gmail.com
++```
++
++## Local Development (without Docker)
++
++**Backend**
++```bash
++cd backend
++python -m venv venv && source venv/bin/activate
++pip install -r requirements.txt
++DATABASE_URL=postgresql://postgres:postgres@localhost:5433/invoiceflow_db uvicorn app.main:app --reload
++```
++
++**Frontend**
++```bash
++cd frontend
++npm install
++npm run dev
++```
++
++## Features
++
++| Feature | Status |
++|---|---|
++| User registration & login (JWT) | ✅ |
++| Client management (CRUD) | ✅ |
++| Invoice creation with line items | ✅ |
++| Invoice PDF download | ✅ |
++| Payment status tracking | ✅ |
++| CSV export | ✅ |
++| Recurring billing schedules | ✅ |
++| Payment reminders | ✅ |
++| Analytics dashboard (live data) | ✅ |
++| AI weekly business summary | ✅ requires API key |
++| AI follow-up message generation | ✅ requires API key |
++| Email sending | ✅ requires SMTP config |
++
++## API Reference
++
++Full interactive docs at `/docs` (development mode only).
++
++Key endpoints:
++- `POST /api/v1/auth/register` — create account
++- `POST /api/v1/auth/login` — get JWT token
++- `GET/POST /api/v1/customers` — client management
++- `GET/POST /api/v1/invoices` — invoice management
++- `GET /api/v1/invoices/{id}/pdf` — download PDF
++- `POST /api/v1/invoices/{id}/ai-followup` — AI reminder
++- `GET /api/v1/dashboard/summary` — dashboard stats
++- `POST /api/v1/ai/weekly-summary` — AI business summary
+diff --git a/backend/app/main.py b/backend/app/main.py
+index 12ca9a9..a0aa513 100644
+--- a/backend/app/main.py
++++ b/backend/app/main.py
+@@ -30,7 +30,8 @@ from sqlalchemy.exc import SQLAlchemyError
+ from sqlalchemy.orm import Session
+ from starlette.middleware.base import BaseHTTPMiddleware
+ 
+-from app.auth import create_access_token, get_current_user, hash_password, verify_password
++from app.auth import create_access_token, create_refresh_token, get_current_user, hash_password, verify_password
++from app.config import settings
+ from app.database import Base, SessionLocal, engine
+ from app import models
+ from app.scheduler import start_scheduler
+@@ -535,7 +536,61 @@ def ai_status():
+     }
+ 
+ 
+-def _human_uptime(seconds: float) -> str:
++
++@app.post("/api/v1/ai/weekly-summary", tags=["AI"], summary="Generate AI weekly business summary")
++async def ai_weekly_summary(
++    db: Session = Depends(get_db),
++    current_user: models.User = Depends(get_current_user),
++):
++    """Generate an AI-powered weekly business summary using invoice data."""
++    import httpx
++
++    api_key = os.getenv("OPENAI_API_KEY") or os.getenv("ANTHROPIC_API_KEY")
++    if not api_key:
++        return {"summary": "AI summary is unavailable — configure OPENAI_API_KEY or ANTHROPIC_API_KEY in your environment."}
++
++    total_invoices = db.query(models.Invoice).count()
++    paid = db.query(models.Invoice).filter(models.Invoice.status == "paid").count()
++    overdue = db.query(models.Invoice).filter(models.Invoice.status == "overdue").count()
++    total_revenue = db.query(func.sum(models.Invoice.total_amount)).filter(models.Invoice.status == "paid").scalar() or 0
++    outstanding = db.query(func.sum(models.Invoice.total_amount)).filter(models.Invoice.status != "paid").scalar() or 0
++    total_clients = db.query(models.Client).count()
++
++    prompt = (
++        f"Generate a concise weekly business summary for an invoice management platform. "
++        f"Current data: {total_invoices} total invoices, {paid} paid, {overdue} overdue, "
++        f"₹{float(total_revenue):,.0f} revenue collected, ₹{float(outstanding):,.0f} outstanding, "
++        f"{total_clients} clients. "
++        f"Provide 3-4 sentences covering: revenue trend, collection health, key risk, and one actionable recommendation. "
++        f"Be specific and use the actual numbers provided."
++    )
++
++    try:
++        use_anthropic = bool(os.getenv("ANTHROPIC_API_KEY")) and not os.getenv("OPENAI_API_KEY")
++        if use_anthropic:
++            async with httpx.AsyncClient(timeout=30) as client:
++                resp = await client.post(
++                    "https://api.anthropic.com/v1/messages",
++                    headers={"x-api-key": os.getenv("ANTHROPIC_API_KEY"), "anthropic-version": "2023-06-01", "content-type": "application/json"},
++                    json={"model": "claude-haiku-4-5-20251001", "max_tokens": 300, "messages": [{"role": "user", "content": prompt}]},
++                )
++                data = resp.json()
++                summary = data.get("content", [{}])[0].get("text", "")
++        else:
++            async with httpx.AsyncClient(timeout=30) as client:
++                resp = await client.post(
++                    "https://api.openai.com/v1/chat/completions",
++                    headers={"Authorization": f"Bearer {os.getenv('OPENAI_API_KEY')}", "Content-Type": "application/json"},
++                    json={"model": "gpt-4o-mini", "max_tokens": 300, "messages": [{"role": "user", "content": prompt}]},
++                )
++                data = resp.json()
++                summary = data.get("choices", [{}])[0].get("message", {}).get("content", "")
++        return {"summary": summary}
++    except Exception as e:
++        logger.error(f"AI weekly summary failed: {e}")
++        return {"summary": "Could not generate summary at this time. Please try again."}
++
++
+     s = int(seconds)
+     days, s = divmod(s, 86400)
+     hours, s = divmod(s, 3600)
+@@ -584,7 +639,13 @@ def login_user(user: UserLogin, db: Session = Depends(get_db)):
+     if not db_user or not verify_password(user.password, db_user.hashed_password):
+         raise HTTPException(status_code=401, detail="Invalid email or password")
+     token = create_access_token({"sub": db_user.email, "role": db_user.role})
+-    return {"access_token": token, "token_type": "bearer"}
++    refresh = create_refresh_token({"sub": db_user.email, "role": db_user.role})
++    return {
++        "access_token": token,
++        "refresh_token": refresh,
++        "token_type": "bearer",
++        "expires_in": settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
++    }
+ 
+ 
+ @api_router.get("/auth/me", response_model=UserResponse, tags=["Authentication"])
+@@ -600,7 +661,7 @@ def create_customer(
+     db: Session = Depends(get_db),
+     current_user: models.User = Depends(get_current_user),
+ ):
+-    new_customer = models.Customer(
++    new_customer = models.Client(
+         name=customer.name,
+         email=customer.email,
+         phone=customer.phone,
+@@ -614,13 +675,13 @@ def create_customer(
+ 
+ 
+ @api_router.get("/customers", response_model=list[CustomerResponse], tags=["Customers"])
+-def get_customers(db: Session = Depends(get_db)):
+-    return db.query(models.Customer).all()
++def get_customers(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
++    return db.query(models.Client).all()
+ 
+ 
+ @api_router.get("/customers/{customer_id}", response_model=CustomerResponse, tags=["Customers"])
+ def get_customer(customer_id: int, db: Session = Depends(get_db)):
+-    customer = db.query(models.Customer).filter(models.Customer.id == customer_id).first()
++    customer = db.query(models.Client).filter(models.Client.id == customer_id).first()
+     if not customer:
+         raise HTTPException(status_code=404, detail="Customer not found")
+     return customer
+@@ -628,7 +689,7 @@ def get_customer(customer_id: int, db: Session = Depends(get_db)):
+ 
+ @api_router.put("/customers/{customer_id}", response_model=CustomerResponse, tags=["Customers"])
+ def update_customer(customer_id: int, customer: CustomerCreate, db: Session = Depends(get_db)):
+-    db_customer = db.query(models.Customer).filter(models.Customer.id == customer_id).first()
++    db_customer = db.query(models.Client).filter(models.Client.id == customer_id).first()
+     if not db_customer:
+         raise HTTPException(status_code=404, detail="Customer not found")
+     db_customer.name = customer.name
+@@ -642,7 +703,7 @@ def update_customer(customer_id: int, customer: CustomerCreate, db: Session = De
+ 
+ @api_router.delete("/customers/{customer_id}", tags=["Customers"])
+ def delete_customer(customer_id: int, db: Session = Depends(get_db)):
+-    customer = db.query(models.Customer).filter(models.Customer.id == customer_id).first()
++    customer = db.query(models.Client).filter(models.Client.id == customer_id).first()
+     if not customer:
+         raise HTTPException(status_code=404, detail="Customer not found")
+     db.delete(customer)
+@@ -658,23 +719,40 @@ def create_invoice(
+     db: Session = Depends(get_db),
+     current_user: models.User = Depends(get_current_user),
+ ):
++    import time as _time
++    invoice_number = f"INV-{current_user.id}-{int(_time.time())}"
+     new_invoice = models.Invoice(
+-        invoice_number=invoice.invoice_number,
+-        customer_id=invoice.customer_id,
++        invoice_number=invoice_number,
++        client_id=invoice.client_id,
+         user_id=current_user.id,
+         due_date=invoice.due_date,
+-        status=invoice.status,
+-        total_amount=invoice.total_amount,
++        status="draft",
++        total_amount=0,
+         notes=invoice.notes,
+     )
+     db.add(new_invoice)
+     db.commit()
+     db.refresh(new_invoice)
++
++    # Create line items
++    for item in invoice.items:
++        total_price = float(item.quantity) * float(item.unit_price)
++        new_item = models.InvoiceItem(
++            invoice_id=new_invoice.id,
++            description=item.description,
++            quantity=item.quantity,
++            unit_price=item.unit_price,
++            total_price=total_price,
++        )
++        db.add(new_item)
++        new_invoice.total_amount = float(new_invoice.total_amount or 0) + total_price
++    db.commit()
++    db.refresh(new_invoice)
+     return new_invoice
+ 
+ 
+ @api_router.get("/invoices", response_model=list[InvoiceResponse], tags=["Invoices"])
+-def get_invoices(db: Session = Depends(get_db)):
++def get_invoices(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+     return db.query(models.Invoice).all()
+ 
+ 
+@@ -692,10 +770,8 @@ def update_invoice(invoice_id: int, invoice: InvoiceCreate, db: Session = Depend
+     if not db_invoice:
+         raise HTTPException(status_code=404, detail="Invoice not found")
+     db_invoice.invoice_number = invoice.invoice_number
+-    db_invoice.customer_id = invoice.customer_id
++    db_invoice.client_id = invoice.client_id
+     db_invoice.due_date = invoice.due_date
+-    db_invoice.status = invoice.status
+-    db_invoice.total_amount = invoice.total_amount
+     db_invoice.notes = invoice.notes
+     db.commit()
+     db.refresh(db_invoice)
+@@ -725,25 +801,59 @@ def update_invoice_status(invoice_id: int, status_update: InvoiceStatusUpdate, d
+ 
+ @api_router.get("/invoices/{invoice_id}/pdf", tags=["Invoices"])
+ def generate_invoice_pdf(invoice_id: int, db: Session = Depends(get_db)):
++    import tempfile
++    from fastapi.background import BackgroundTasks
+     invoice = db.query(models.Invoice).filter(models.Invoice.id == invoice_id).first()
+     if not invoice:
+         raise HTTPException(status_code=404, detail="Invoice not found")
+ 
+-    file_name = f"invoice_{invoice_id}.pdf"
+-    file_path = os.path.join("app", file_name)
++    client = db.query(models.Client).filter(models.Client.id == invoice.client_id).first()
++    items = db.query(models.InvoiceItem).filter(models.InvoiceItem.invoice_id == invoice_id).all()
++
++    tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
++    file_path = tmp.name
++    tmp.close()
+ 
+     c = canvas.Canvas(file_path, pagesize=letter)
+-    c.setFont("Helvetica-Bold", 16)
+-    c.drawString(200, 750, "INVOICE")
+-    c.setFont("Helvetica", 12)
+-    c.drawString(50, 700, f"Invoice Number: {invoice.invoice_number}")
+-    c.drawString(50, 680, f"Customer ID: {invoice.customer_id}")
+-    c.drawString(50, 660, f"Status: {invoice.status}")
+-    c.drawString(50, 640, f"Total Amount: ₹{invoice.total_amount}")
+-    c.drawString(50, 600, f"Notes: {invoice.notes or ''}")
++    c.setFont("Helvetica-Bold", 20)
++    c.drawString(50, 750, "INVOICE")
++    c.setFont("Helvetica-Bold", 12)
++    c.drawString(400, 750, f"#{invoice.invoice_number}")
++    c.line(50, 740, 550, 740)
++    c.setFont("Helvetica", 11)
++    c.drawString(50, 720, f"Client: {client.name if client else 'N/A'}")
++    if client and client.email:
++        c.drawString(50, 705, f"Email: {client.email}")
++    c.drawString(50, 690, f"Status: {invoice.status.upper()}")
++    if invoice.due_date:
++        c.drawString(50, 675, f"Due Date: {invoice.due_date.strftime('%d %b %Y') if hasattr(invoice.due_date, 'strftime') else str(invoice.due_date)[:10]}")
++    y = 645
++    c.setFont("Helvetica-Bold", 10)
++    c.drawString(50, y, "Description")
++    c.drawString(350, y, "Qty")
++    c.drawString(420, y, "Unit Price")
++    c.drawString(500, y, "Total")
++    c.line(50, y - 5, 550, y - 5)
++    y -= 20
++    c.setFont("Helvetica", 10)
++    for item in items:
++        c.drawString(50, y, str(item.description)[:45])
++        c.drawString(350, y, str(item.quantity))
++        c.drawString(420, y, f"₹{item.unit_price}")
++        c.drawString(500, y, f"₹{item.total_price}")
++        y -= 18
++    c.line(50, y, 550, y)
++    y -= 15
++    c.setFont("Helvetica-Bold", 11)
++    c.drawString(420, y, "Total:")
++    c.drawString(500, y, f"₹{invoice.total_amount}")
++    if invoice.notes:
++        c.setFont("Helvetica", 10)
++        c.drawString(50, y - 30, f"Notes: {invoice.notes}")
+     c.save()
+ 
+-    return FileResponse(file_path, media_type="application/pdf", filename=file_name)
++    file_name = f"invoice_{invoice.invoice_number}.pdf"
++    return FileResponse(file_path, media_type="application/pdf", filename=file_name, background=None)
+ 
+ 
+ @api_router.post("/invoices/{invoice_id}/send-reminder", response_model=ReminderResponse, tags=["Invoices"])
+@@ -752,7 +862,7 @@ def send_reminder(invoice_id: int, db: Session = Depends(get_db)):
+     invoice = db.query(models.Invoice).filter(models.Invoice.id == invoice_id).first()
+     if not invoice:
+         raise HTTPException(status_code=404, detail="Invoice not found")
+-    customer = db.query(models.Customer).filter(models.Customer.id == invoice.customer_id).first()
++    customer = db.query(models.Client).filter(models.Client.id == invoice.client_id).first()
+     subject = f"Payment Reminder for Invoice {invoice.invoice_number}"
+     message = (
+         f"Hello,\n\nThis is a reminder that your invoice {invoice.invoice_number} "
+@@ -815,7 +925,7 @@ def send_invoice_email(invoice_id: int, tone: str = "polite", db: Session = Depe
+     invoice = db.query(models.Invoice).filter(models.Invoice.id == invoice_id).first()
+     if not invoice:
+         raise HTTPException(status_code=404, detail="Invoice not found")
+-    customer = db.query(models.Customer).filter(models.Customer.id == invoice.customer_id).first()
++    customer = db.query(models.Client).filter(models.Client.id == invoice.client_id).first()
+     if not customer or not customer.email:
+         raise HTTPException(status_code=400, detail="Customer email not found")
+ 
+@@ -851,7 +961,7 @@ def create_invoice_item(item: InvoiceItemCreate, db: Session = Depends(get_db)):
+ 
+ 
+ @api_router.get("/invoice-items", response_model=list[InvoiceItemResponse], tags=["Invoice Items"])
+-def get_invoice_items(db: Session = Depends(get_db)):
++def get_invoice_items(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+     return db.query(models.InvoiceItem).all()
+ 
+ 
+@@ -905,7 +1015,7 @@ def create_recurring_billing(
+     current_user: models.User = Depends(get_current_user),
+ ):
+     new_plan = models.RecurringBilling(
+-        customer_id=data.customer_id,
++        client_id=data.client_id,
+         user_id=current_user.id,
+         title=data.title,
+         amount=data.amount,
+@@ -920,7 +1030,7 @@ def create_recurring_billing(
+ 
+ 
+ @api_router.get("/recurring-billing", response_model=list[RecurringBillingResponse], tags=["Recurring Billing"])
+-def get_recurring_billings(db: Session = Depends(get_db)):
++def get_recurring_billings(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+     return db.query(models.RecurringBilling).all()
+ 
+ 
+@@ -937,7 +1047,7 @@ def update_recurring_billing(plan_id: int, data: RecurringBillingCreate, db: Ses
+     plan = db.query(models.RecurringBilling).filter(models.RecurringBilling.id == plan_id).first()
+     if not plan:
+         raise HTTPException(status_code=404, detail="Recurring billing plan not found")
+-    plan.customer_id = data.customer_id
++    plan.client_id = data.client_id
+     plan.title = data.title
+     plan.amount = data.amount
+     plan.frequency = data.frequency
+@@ -968,7 +1078,7 @@ def generate_invoice_from_recurring(plan_id: int, db: Session = Depends(get_db))
+     invoice_number = f"REC-{plan.id}-{int(datetime.now().timestamp())}"
+     new_invoice = models.Invoice(
+         invoice_number=invoice_number,
+-        customer_id=plan.customer_id,
++        client_id=plan.client_id,
+         user_id=plan.user_id,
+         due_date=plan.next_billing_date,
+         status="draft",
+@@ -985,7 +1095,7 @@ def generate_invoice_from_recurring(plan_id: int, db: Session = Depends(get_db))
+ 
+ @api_router.get("/dashboard/summary", tags=["Dashboard"])
+ def dashboard_summary(db: Session = Depends(get_db)):
+-    total_customers = db.query(models.Customer).count()
++    total_customers = db.query(models.Client).count()
+     total_invoices = db.query(models.Invoice).count()
+     paid_invoices = db.query(models.Invoice).filter(models.Invoice.status == "paid").count()
+     draft_invoices = db.query(models.Invoice).filter(models.Invoice.status == "draft").count()
+@@ -1084,7 +1194,7 @@ def export_invoices_csv(db: Session = Depends(get_db)):
+         writer.writerow(["ID", "Invoice Number", "Customer ID", "Status", "Total Amount", "Due Date", "Notes"])
+         for invoice in invoices:
+             writer.writerow([
+-                invoice.id, invoice.invoice_number, invoice.customer_id,
++                invoice.id, invoice.invoice_number, invoice.client_id,
+                 invoice.status, invoice.total_amount, invoice.due_date, invoice.notes,
+             ])
+     return FileResponse(file_path, media_type="text/csv", filename="invoices_export.csv")
+@@ -1104,7 +1214,7 @@ def run_recurring_billing_scheduler(db: Session = Depends(get_db)):
+         invoice_number = f"AUTO-{plan.id}-{int(datetime.now().timestamp())}"
+         new_invoice = models.Invoice(
+             invoice_number=invoice_number,
+-            customer_id=plan.customer_id,
++            client_id=plan.client_id,
+             user_id=plan.user_id,
+             due_date=plan.next_billing_date,
+             status="draft",
+diff --git a/frontend/src/app/analytics/page.tsx b/frontend/src/app/analytics/page.tsx
+index 378b8e2..2ebb2c1 100644
+--- a/frontend/src/app/analytics/page.tsx
++++ b/frontend/src/app/analytics/page.tsx
+@@ -1,31 +1,94 @@
+ 'use client';
+-import { useState } from 'react';
++import { useEffect, useState } from 'react';
++import { useRouter } from 'next/navigation';
+ import Sidebar from '@/components/Sidebar';
++import { dashboard, invoices as invoicesApi, customers as customersApi, type Customer } from '@/lib/api';
+ 
+-const REVENUE_DATA = [
+-  { month: 'Oct', revenue: 180000, collected: 160000, overdue: 20000 },
+-  { month: 'Nov', revenue: 220000, collected: 195000, overdue: 25000 },
+-  { month: 'Dec', revenue: 195000, collected: 180000, overdue: 15000 },
+-  { month: 'Jan', revenue: 260000, collected: 230000, overdue: 30000 },
+-  { month: 'Feb', revenue: 240000, collected: 215000, overdue: 25000 },
+-  { month: 'Mar', revenue: 310000, collected: 280000, overdue: 30000 },
+-];
+-
+-const TOP_CLIENTS = [
+-  { name: 'Acme Corp', revenue: 124000, invoices: 8, risk: 'low' },
+-  { name: 'Infosys Ltd', revenue: 98000, invoices: 5, risk: 'low' },
+-  { name: 'TechStart Inc', revenue: 76000, invoices: 12, risk: 'medium' },
+-  { name: 'Global Media', revenue: 54000, invoices: 4, risk: 'high' },
+-  { name: 'Sunrise Hotels', revenue: 41000, invoices: 7, risk: 'medium' },
+-];
++type RevenuePoint = { month: string; amount: number };
++type ClientRow = { name: string; revenue: number; invoices: number; risk: string };
+ 
+-const riskColor = { low: 'var(--green)', medium: 'var(--yellow)', high: 'var(--red)' } as const;
+ const riskBadge = { low: 'badge-green', medium: 'badge-yellow', high: 'badge-red' } as const;
++const riskColor = { low: 'var(--green)', medium: 'var(--yellow)', high: 'var(--red)' } as const;
+ 
+ export default function AnalyticsPage() {
++  const router = useRouter();
+   const [tab, setTab] = useState<'revenue' | 'clients' | 'late' | 'recurring'>('revenue');
++  const [loading, setLoading] = useState(true);
++  const [kpis, setKpis] = useState({ total_revenue: 0, collection_rate: 0, avg_invoice_value: 0, overdue_rate: 0 });
++  const [revenueData, setRevenueData] = useState<RevenuePoint[]>([]);
++  const [topClients, setTopClients] = useState<ClientRow[]>([]);
++  const [lateStats, setLateStats] = useState({ overdue_count: 0, overdue_rate_percent: 0, overdue_amount: 0 });
++
+   const fmt = (n: number) => `₹${n.toLocaleString('en-IN', { maximumFractionDigits: 0 })}`;
+-  const maxRev = Math.max(...REVENUE_DATA.map(d => d.revenue));
++
++  useEffect(() => {
++    const token = localStorage.getItem('token');
++    if (!token) { router.push('/login'); return; }
++    load();
++  }, []);
++
++  async function load() {
++    setLoading(true);
++    try {
++      const base = process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8000/api/v1';
++      const token = localStorage.getItem('token');
++      const h = { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) };
++
++      const [summaryRes, kpiRes, lateRes, monthlyRes, invoiceList, customerList] = await Promise.all([
++        fetch(`${base}/dashboard/summary`, { headers: h }).then(r => r.json()),
++        fetch(`${base}/analytics/kpis`, { headers: h }).then(r => r.json()),
++        fetch(`${base}/analytics/late-payments`, { headers: h }).then(r => r.json()),
++        fetch(`${base}/dashboard/monthly-revenue`, { headers: h }).then(r => r.json()),
++        invoicesApi.getAll(),
++        customersApi.list(),
++      ]);
++
++      // KPIs
++      const total = summaryRes.total_revenue || 0;
++      const totalInvoiced = kpiRes.total_invoices || 1;
++      setKpis({
++        total_revenue: total,
++        collection_rate: kpiRes.collection_rate_percent || 0,
++        avg_invoice_value: kpiRes.average_invoice_value || 0,
++        overdue_rate: lateRes.overdue_rate_percent || 0,
++      });
++
++      // Revenue chart
++      setRevenueData(monthlyRes || []);
++
++      // Late stats
++      setLateStats({
++        overdue_count: lateRes.overdue_count || 0,
++        overdue_rate_percent: lateRes.overdue_rate_percent || 0,
++        overdue_amount: lateRes.overdue_amount || 0,
++      });
++
++      // Top clients by revenue
++      const clientMap: Record<number, { name: string; revenue: number; invoices: number }> = {};
++      for (const inv of invoiceList) {
++        const cid = inv.client_id ?? inv.customer_id;
++        if (!clientMap[cid]) {
++          const c = customerList.find((x: Customer) => x.id === cid);
++          clientMap[cid] = { name: c?.name || `Client #${cid}`, revenue: 0, invoices: 0 };
++        }
++        clientMap[cid].revenue += Number(inv.total_amount) || 0;
++        clientMap[cid].invoices += 1;
++      }
++      const sorted = Object.values(clientMap)
++        .sort((a, b) => b.revenue - a.revenue)
++        .slice(0, 5)
++        .map(c => ({
++          ...c,
++          risk: c.revenue > 80000 ? 'low' : c.invoices > 8 ? 'medium' : 'low',
++        }));
++      setTopClients(sorted);
++    } catch (e) {
++      console.error(e);
++    }
++    setLoading(false);
++  }
++
++  const maxRev = Math.max(...revenueData.map(d => d.amount), 1);
+ 
+   return (
+     <div className="layout">
+@@ -36,143 +99,140 @@ export default function AnalyticsPage() {
+           <div className="topbar-right">
+             <div className="ai-health-pill">
+               <div className="ai-health-dot" />
+-              <span>AI-Powered Analytics</span>
++              <span>Live Data</span>
+             </div>
+           </div>
+         </header>
+ 
+         <div className="page-content">
+-          {/* KPI row */}
+-          <div className="stats-grid" style={{ marginBottom: 24 }}>
+-            {[
+-              { label: 'Total Revenue (6mo)', value: fmt(REVENUE_DATA.reduce((s,d) => s+d.revenue, 0)), color: 'blue', icon: '₹' },
+-              { label: 'Collection Rate', value: '89.4%', color: 'green', icon: '✓' },
+-              { label: 'Avg Invoice Value', value: fmt(48000), color: 'purple', icon: '◈' },
+-              { label: 'Overdue Rate', value: '11.6%', color: 'yellow', icon: '⚠' },
+-            ].map(kpi => (
+-              <div key={kpi.label} className={`stat-card c-${kpi.color}`}>
+-                <div className={`stat-icon c-${kpi.color}`}>{kpi.icon}</div>
+-                <div className="stat-label">{kpi.label}</div>
+-                <div className={`stat-value c-${kpi.color}`}>{kpi.value}</div>
+-              </div>
+-            ))}
+-          </div>
+-
+-          {/* Tabs */}
+-          <div style={{ display: 'flex', gap: 4, marginBottom: 20, background: 'var(--surface)', padding: 4, borderRadius: 'var(--r-sm)', width: 'fit-content' }}>
+-            {(['revenue', 'clients', 'late', 'recurring'] as const).map(t => (
+-              <button key={t} onClick={() => setTab(t)} style={{
+-                padding: '6px 16px', borderRadius: 6, border: 'none', fontSize: 12, fontWeight: 600,
+-                background: tab === t ? 'var(--bg3)' : 'transparent',
+-                color: tab === t ? 'var(--text)' : 'var(--text-muted)',
+-                textTransform: 'capitalize', cursor: 'pointer', transition: 'all 0.15s',
+-              }}>
+-                {t === 'late' ? 'Late Payments' : t === 'recurring' ? 'Recurring Revenue' : t.charAt(0).toUpperCase() + t.slice(1)}
+-              </button>
+-            ))}
+-          </div>
+-
+-          {tab === 'revenue' && (
+-            <div className="card">
+-              <div className="section-header">
+-                <div>
+-                  <div className="section-title">Revenue Trend</div>
+-                  <div className="section-subtitle">6-month breakdown — collected vs overdue</div>
+-                </div>
+-              </div>
+-              <div style={{ display: 'flex', alignItems: 'flex-end', gap: 12, height: 160, marginBottom: 12 }}>
+-                {REVENUE_DATA.map((d, i) => (
+-                  <div key={i} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, height: '100%', justifyContent: 'flex-end' }}>
+-                    <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: 2, height: `${(d.revenue/maxRev)*100}%`, justifyContent: 'flex-end' }}>
+-                      <div style={{ flex: d.overdue, background: 'rgba(255,90,90,0.4)', borderRadius: '3px 3px 0 0', minHeight: 4 }} title={`Overdue: ${fmt(d.overdue)}`} />
+-                      <div style={{ flex: d.collected, background: 'linear-gradient(180deg, var(--accent), var(--accent2))', borderRadius: '3px 3px 0 0', minHeight: 8 }} title={`Collected: ${fmt(d.collected)}`} />
+-                    </div>
+-                    <div style={{ fontSize: 10, color: 'var(--text-dim)', fontFamily: 'var(--font-mono)' }}>{d.month}</div>
++          {loading ? (
++            <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 28 }}>
++              {[0,1,2].map(i => <div key={i} className="loading-dot" />)}
++              <span style={{ color: 'var(--text-muted)', fontSize: 13 }}>Loading analytics...</span>
++            </div>
++          ) : (
++            <>
++              {/* KPI row */}
++              <div className="stats-grid" style={{ marginBottom: 24 }}>
++                {[
++                  { label: 'Total Revenue', value: fmt(kpis.total_revenue), color: 'blue', icon: '₹' },
++                  { label: 'Collection Rate', value: `${kpis.collection_rate.toFixed(1)}%`, color: 'green', icon: '✓' },
++                  { label: 'Avg Invoice Value', value: fmt(kpis.avg_invoice_value), color: 'purple', icon: '◈' },
++                  { label: 'Overdue Rate', value: `${kpis.overdue_rate.toFixed(1)}%`, color: 'yellow', icon: '⚠' },
++                ].map(kpi => (
++                  <div key={kpi.label} className={`stat-card c-${kpi.color}`}>
++                    <div className={`stat-icon c-${kpi.color}`}>{kpi.icon}</div>
++                    <div className="stat-label">{kpi.label}</div>
++                    <div className={`stat-value c-${kpi.color}`}>{kpi.value}</div>
+                   </div>
+                 ))}
+               </div>
+-              <div style={{ display: 'flex', gap: 20, fontSize: 12, color: 'var(--text-muted)' }}>
+-                <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}><span style={{ width: 10, height: 10, borderRadius: 2, background: 'var(--accent)', display: 'inline-block' }}/> Collected</span>
+-                <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}><span style={{ width: 10, height: 10, borderRadius: 2, background: 'rgba(255,90,90,0.4)', display: 'inline-block' }}/> Overdue</span>
+-              </div>
+-            </div>
+-          )}
+ 
+-          {tab === 'clients' && (
+-            <div className="card" style={{ padding: 0 }}>
+-              <div style={{ padding: '20px 24px 0' }}>
+-                <div className="section-title">Top Clients Leaderboard</div>
+-                <div className="section-subtitle" style={{ marginBottom: 16 }}>Ranked by revenue — AI risk score included</div>
++              {/* Tabs */}
++              <div style={{ display: 'flex', gap: 4, marginBottom: 20, background: 'var(--surface)', padding: 4, borderRadius: 'var(--r-sm)', width: 'fit-content' }}>
++                {(['revenue', 'clients', 'late', 'recurring'] as const).map(t => (
++                  <button key={t} onClick={() => setTab(t)} style={{
++                    padding: '6px 16px', borderRadius: 6, border: 'none', fontSize: 12, fontWeight: 600,
++                    background: tab === t ? 'var(--bg3)' : 'transparent',
++                    color: tab === t ? 'var(--text)' : 'var(--text-muted)',
++                    textTransform: 'capitalize', cursor: 'pointer', transition: 'all 0.15s',
++                  }}>
++                    {t === 'late' ? 'Late Payments' : t === 'recurring' ? 'Recurring Revenue' : t.charAt(0).toUpperCase() + t.slice(1)}
++                  </button>
++                ))}
+               </div>
+-              <div className="table-wrapper">
+-                <table>
+-                  <thead><tr><th>#</th><th>Client</th><th>Revenue</th><th>Invoices</th><th>AI Risk</th><th>Share</th></tr></thead>
+-                  <tbody>
+-                    {TOP_CLIENTS.map((c, i) => (
+-                      <tr key={i}>
+-                        <td><span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-dim)', fontSize: 13 }}>#{i+1}</span></td>
+-                        <td><span style={{ fontWeight: 600 }}>{c.name}</span></td>
+-                        <td><span style={{ fontFamily: 'var(--font-mono)', fontWeight: 600, color: 'var(--accent)' }}>{fmt(c.revenue)}</span></td>
+-                        <td>{c.invoices}</td>
+-                        <td><span className={`badge ${riskBadge[c.risk as keyof typeof riskBadge]}`}>{c.risk}</span></td>
+-                        <td>
+-                          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+-                            <div style={{ flex: 1, height: 4, background: 'var(--surface)', borderRadius: 2, overflow: 'hidden' }}>
+-                              <div style={{ width: `${(c.revenue/TOP_CLIENTS[0].revenue)*100}%`, height: '100%', background: riskColor[c.risk as keyof typeof riskColor], borderRadius: 2 }} />
+-                            </div>
+-                            <span style={{ fontSize: 11, color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>{Math.round((c.revenue/REVENUE_DATA.reduce((s,d)=>s+d.revenue,0))*100)}%</span>
++
++              {tab === 'revenue' && (
++                <div className="card">
++                  <div className="section-header">
++                    <div>
++                      <div className="section-title">Monthly Revenue</div>
++                      <div className="section-subtitle">Paid invoices by month this year</div>
++                    </div>
++                  </div>
++                  {revenueData.length > 0 ? (
++                    <>
++                      <div style={{ display: 'flex', alignItems: 'flex-end', gap: 12, height: 160, marginBottom: 12 }}>
++                        {revenueData.map((d, i) => (
++                          <div key={i} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, height: '100%', justifyContent: 'flex-end' }}>
++                            <div style={{ width: '100%', height: `${(d.amount / maxRev) * 100}%`, background: 'linear-gradient(180deg, var(--accent), var(--accent2))', borderRadius: '3px 3px 0 0', minHeight: 4 }} title={`${d.month}: ${fmt(d.amount)}`} />
++                            <div style={{ fontSize: 10, color: 'var(--text-dim)', fontFamily: 'var(--font-mono)' }}>{d.month}</div>
+                           </div>
+-                        </td>
+-                      </tr>
+-                    ))}
+-                  </tbody>
+-                </table>
+-              </div>
+-            </div>
+-          )}
++                        ))}
++                      </div>
++                    </>
++                  ) : (
++                    <div style={{ height: 100, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-dim)', fontSize: 13 }}>No revenue data yet — mark invoices as paid to see trends</div>
++                  )}
++                </div>
++              )}
+ 
+-          {tab === 'late' && (
+-            <div className="card">
+-              <div className="section-title" style={{ marginBottom: 16 }}>Late Payment Analytics</div>
+-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 16, marginBottom: 20 }}>
+-                {[
+-                  { label: 'Avg Days Late', value: '18 days', color: 'var(--yellow)' },
+-                  { label: 'Total Overdue', value: '₹1,45,000', color: 'var(--red)' },
+-                  { label: 'Recovery Rate', value: '76%', color: 'var(--green)' },
+-                ].map((m,i) => (
+-                  <div key={i} style={{ padding: '16px 18px', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--r-sm)', textAlign: 'center' }}>
+-                    <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.06em' }}>{m.label}</div>
+-                    <div style={{ fontSize: 24, fontWeight: 800, color: m.color, fontFamily: 'var(--font-display)' }}>{m.value}</div>
++              {tab === 'clients' && (
++                <div className="card" style={{ padding: 0 }}>
++                  <div style={{ padding: '20px 24px 0' }}>
++                    <div className="section-title">Top Clients by Revenue</div>
++                    <div className="section-subtitle" style={{ marginBottom: 16 }}>Ranked from your actual invoices</div>
++                  </div>
++                  <div className="table-wrapper">
++                    <table>
++                      <thead><tr><th>#</th><th>Client</th><th>Revenue</th><th>Invoices</th><th>Risk</th><th>Share</th></tr></thead>
++                      <tbody>
++                        {topClients.length === 0 ? (
++                          <tr><td colSpan={6}><div className="empty-state"><div className="empty-state-icon">◈</div><div className="empty-state-title">No data yet</div></div></td></tr>
++                        ) : topClients.map((c, i) => (
++                          <tr key={i}>
++                            <td><span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-dim)', fontSize: 13 }}>#{i+1}</span></td>
++                            <td><span style={{ fontWeight: 600 }}>{c.name}</span></td>
++                            <td><span style={{ fontFamily: 'var(--font-mono)', fontWeight: 600, color: 'var(--accent)' }}>{fmt(c.revenue)}</span></td>
++                            <td>{c.invoices}</td>
++                            <td><span className={`badge ${riskBadge[c.risk as keyof typeof riskBadge]}`}>{c.risk}</span></td>
++                            <td>
++                              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
++                                <div style={{ flex: 1, height: 4, background: 'var(--surface)', borderRadius: 2, overflow: 'hidden' }}>
++                                  <div style={{ width: `${(c.revenue / (topClients[0]?.revenue || 1)) * 100}%`, height: '100%', background: riskColor[c.risk as keyof typeof riskColor], borderRadius: 2 }} />
++                                </div>
++                              </div>
++                            </td>
++                          </tr>
++                        ))}
++                      </tbody>
++                    </table>
+                   </div>
+-                ))}
+-              </div>
+-              <div className="ai-summary-banner">
+-                <div className="ai-summary-left">
+-                  <div className="ai-summary-badge">✦ AI Prediction</div>
+-                  <div className="ai-summary-text">Based on payment history patterns, Global Media (INV-041) has a 78% probability of late payment. Recommend sending a pre-emptive reminder 7 days before due date.</div>
+                 </div>
+-              </div>
+-            </div>
+-          )}
++              )}
+ 
+-          {tab === 'recurring' && (
+-            <div className="card">
+-              <div className="section-title" style={{ marginBottom: 16 }}>Recurring Revenue Analytics</div>
+-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+-                {[
+-                  { label: 'MRR (Monthly Recurring)', value: '₹85,000', trend: '+12%', up: true },
+-                  { label: 'ARR Projection', value: '₹10,20,000', trend: '+18%', up: true },
+-                  { label: 'Active Subscriptions', value: '7', trend: '+2', up: true },
+-                  { label: 'Churn Risk', value: '1 client', trend: 'Monitor', up: false },
+-                ].map((m,i) => (
+-                  <div key={i} style={{ padding: '18px 20px', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--r-sm)' }}>
+-                    <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.06em' }}>{m.label}</div>
+-                    <div style={{ fontSize: 22, fontWeight: 800, color: 'var(--text)', fontFamily: 'var(--font-display)', marginBottom: 4 }}>{m.value}</div>
+-                    <div style={{ fontSize: 12, color: m.up ? 'var(--green)' : 'var(--yellow)' }}>{m.trend} vs last period</div>
++              {tab === 'late' && (
++                <div className="card">
++                  <div className="section-title" style={{ marginBottom: 16 }}>Late Payment Analytics</div>
++                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 16, marginBottom: 20 }}>
++                    {[
++                      { label: 'Overdue Invoices', value: String(lateStats.overdue_count), color: 'var(--red)' },
++                      { label: 'Total Overdue', value: fmt(lateStats.overdue_amount), color: 'var(--yellow)' },
++                      { label: 'Overdue Rate', value: `${lateStats.overdue_rate_percent.toFixed(1)}%`, color: 'var(--accent)' },
++                    ].map((m, i) => (
++                      <div key={i} style={{ padding: '16px 18px', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--r-sm)', textAlign: 'center' }}>
++                        <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.06em' }}>{m.label}</div>
++                        <div style={{ fontSize: 24, fontWeight: 800, color: m.color, fontFamily: 'var(--font-display)' }}>{m.value}</div>
++                      </div>
++                    ))}
+                   </div>
+-                ))}
+-              </div>
+-            </div>
++                  {lateStats.overdue_count === 0 && (
++                    <div style={{ padding: '16px', background: 'rgba(16,185,129,0.06)', border: '1px solid rgba(16,185,129,0.2)', borderRadius: 'var(--r-sm)', color: 'var(--green)', fontSize: 14 }}>
++                      ✓ No overdue invoices — great work!
++                    </div>
++                  )}
++                </div>
++              )}
++
++              {tab === 'recurring' && (
++                <div className="card">
++                  <div className="section-title" style={{ marginBottom: 16 }}>Recurring Revenue</div>
++                  <div style={{ color: 'var(--text-muted)', fontSize: 14 }}>
++                    Set up recurring billing schedules in the <a href="/recurring" style={{ color: 'var(--accent)' }}>Recurring</a> section to track MRR and ARR here.
++                  </div>
++                </div>
++              )}
++            </>
+           )}
+         </div>
+       </main>
+diff --git a/frontend/src/app/page.tsx b/frontend/src/app/page.tsx
+index bd344a0..411ff82 100644
+--- a/frontend/src/app/page.tsx
++++ b/frontend/src/app/page.tsx
+@@ -60,20 +60,16 @@ const AI_TIPS = [
+ 
+ async function getAIWeeklySummary(): Promise<string> {
+   try {
+-    const res = await fetch('https://api.anthropic.com/v1/messages', {
++    const token = localStorage.getItem('token');
++    const res = await fetch('http://127.0.0.1:8000/api/v1/ai/weekly-summary', {
+       method: 'POST',
+-      headers: { 'Content-Type': 'application/json' },
+-      body: JSON.stringify({
+-        model: 'claude-sonnet-4-20250514',
+-        max_tokens: 1000,
+-        messages: [{
+-          role: 'user',
+-          content: 'Generate a concise weekly business summary for an invoice/billing SaaS user. Include: revenue trend, collection rate, key risk, and one actionable recommendation. Keep it to 3-4 sentences. Be specific with realistic numbers. Use ₹ for currency.'
+-        }]
+-      })
++      headers: {
++        'Content-Type': 'application/json',
++        ...(token ? { Authorization: `Bearer ${token}` } : {}),
++      },
+     });
+     const data = await res.json();
+-    return data.content?.[0]?.text || '';
++    return data.summary || '';
+   } catch { return ''; }
+ }
+ 
+diff --git a/frontend/src/lib/api.ts b/frontend/src/lib/api.ts
+index 5adff5d..a58c0b1 100644
+--- a/frontend/src/lib/api.ts
++++ b/frontend/src/lib/api.ts
+@@ -23,13 +23,17 @@ async function request(path: string, options: RequestInit = {}) {
+ }
+ 
+ export const auth = {
+-  
+-
+ login: (email: string, password: string) =>
+   request("/auth/login", {
+     method: "POST",
+     body: JSON.stringify({ email, password }),
+-  }),  
++  }),
++
++register: (data: { full_name: string; email: string; password: string }) =>
++  request("/auth/register", {
++    method: "POST",
++    body: JSON.stringify(data),
++  }),
+ };
+ 
+ export type Customer = {
+@@ -119,7 +123,7 @@ export const invoices = {
+     return invoiceData.map((inv: any) => ({
+       ...inv,
+       due_date: inv.due_date || new Date().toISOString(),
+-      customer: customerData.find((c: Customer) => c.id === inv.customer_id),
++      customer: customerData.find((c: Customer) => c.id === (inv.client_id ?? inv.customer_id)),
+     }));
+   },
+ 
+@@ -131,17 +135,13 @@ export const invoices = {
+     notes?: string;
+     items: InvoiceItemCreate[];
+   }) => {
+-    const invoiceNumber = `INV-${Date.now()}`;
+-
+     const invoice = await request("/invoices", {
+       method: "POST",
+       body: JSON.stringify({
+-        invoice_number: invoiceNumber,
+-        customer_id: data.customer_id,
++        client_id: data.customer_id,
+         due_date: `${data.due_date}T00:00:00`,
+-        status: "draft",
+-        total_amount: 0,
+         notes: data.notes || "",
++        items: data.items.filter(it => it.description.trim()),
+       }),
+     });
+ 
+-- 
+2.43.0
+

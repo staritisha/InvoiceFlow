@@ -23,13 +23,17 @@ async function request(path: string, options: RequestInit = {}) {
 }
 
 export const auth = {
-  
-
 login: (email: string, password: string) =>
   request("/auth/login", {
     method: "POST",
     body: JSON.stringify({ email, password }),
-  }),  
+  }),
+
+register: (data: { full_name: string; email: string; password: string }) =>
+  request("/auth/register", {
+    method: "POST",
+    body: JSON.stringify(data),
+  }),
 };
 
 export type Customer = {
@@ -119,7 +123,7 @@ export const invoices = {
     return invoiceData.map((inv: any) => ({
       ...inv,
       due_date: inv.due_date || new Date().toISOString(),
-      customer: customerData.find((c: Customer) => c.id === inv.customer_id),
+      customer: customerData.find((c: Customer) => c.id === (inv.client_id ?? inv.customer_id)),
     }));
   },
 
@@ -131,17 +135,13 @@ export const invoices = {
     notes?: string;
     items: InvoiceItemCreate[];
   }) => {
-    const invoiceNumber = `INV-${Date.now()}`;
-
     const invoice = await request("/invoices", {
       method: "POST",
       body: JSON.stringify({
-        invoice_number: invoiceNumber,
-        customer_id: data.customer_id,
+        client_id: data.customer_id,
         due_date: `${data.due_date}T00:00:00`,
-        status: "draft",
-        total_amount: 0,
         notes: data.notes || "",
+        items: data.items.filter(it => it.description.trim()),
       }),
     });
 
