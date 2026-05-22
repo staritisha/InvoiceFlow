@@ -30,7 +30,8 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from app.auth import create_access_token, get_current_user, hash_password, verify_password
+from app.auth import create_access_token, create_refresh_token, get_current_user, hash_password, verify_password
+from app.config import settings
 from app.database import Base, SessionLocal, engine
 from app import models
 from app.scheduler import start_scheduler
@@ -535,7 +536,61 @@ def ai_status():
     }
 
 
-def _human_uptime(seconds: float) -> str:
+
+@app.post("/api/v1/ai/weekly-summary", tags=["AI"], summary="Generate AI weekly business summary")
+async def ai_weekly_summary(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    """Generate an AI-powered weekly business summary using invoice data."""
+    import httpx
+
+    api_key = os.getenv("OPENAI_API_KEY") or os.getenv("ANTHROPIC_API_KEY")
+    if not api_key:
+        return {"summary": "AI summary is unavailable — configure OPENAI_API_KEY or ANTHROPIC_API_KEY in your environment."}
+
+    total_invoices = db.query(models.Invoice).count()
+    paid = db.query(models.Invoice).filter(models.Invoice.status == "paid").count()
+    overdue = db.query(models.Invoice).filter(models.Invoice.status == "overdue").count()
+    total_revenue = db.query(func.sum(models.Invoice.total_amount)).filter(models.Invoice.status == "paid").scalar() or 0
+    outstanding = db.query(func.sum(models.Invoice.total_amount)).filter(models.Invoice.status != "paid").scalar() or 0
+    total_clients = db.query(models.Client).count()
+
+    prompt = (
+        f"Generate a concise weekly business summary for an invoice management platform. "
+        f"Current data: {total_invoices} total invoices, {paid} paid, {overdue} overdue, "
+        f"₹{float(total_revenue):,.0f} revenue collected, ₹{float(outstanding):,.0f} outstanding, "
+        f"{total_clients} clients. "
+        f"Provide 3-4 sentences covering: revenue trend, collection health, key risk, and one actionable recommendation. "
+        f"Be specific and use the actual numbers provided."
+    )
+
+    try:
+        use_anthropic = bool(os.getenv("ANTHROPIC_API_KEY")) and not os.getenv("OPENAI_API_KEY")
+        if use_anthropic:
+            async with httpx.AsyncClient(timeout=30) as client:
+                resp = await client.post(
+                    "https://api.anthropic.com/v1/messages",
+                    headers={"x-api-key": os.getenv("ANTHROPIC_API_KEY"), "anthropic-version": "2023-06-01", "content-type": "application/json"},
+                    json={"model": "claude-haiku-4-5-20251001", "max_tokens": 300, "messages": [{"role": "user", "content": prompt}]},
+                )
+                data = resp.json()
+                summary = data.get("content", [{}])[0].get("text", "")
+        else:
+            async with httpx.AsyncClient(timeout=30) as client:
+                resp = await client.post(
+                    "https://api.openai.com/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {os.getenv('OPENAI_API_KEY')}", "Content-Type": "application/json"},
+                    json={"model": "gpt-4o-mini", "max_tokens": 300, "messages": [{"role": "user", "content": prompt}]},
+                )
+                data = resp.json()
+                summary = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+        return {"summary": summary}
+    except Exception as e:
+        logger.error(f"AI weekly summary failed: {e}")
+        return {"summary": "Could not generate summary at this time. Please try again."}
+
+
     s = int(seconds)
     days, s = divmod(s, 86400)
     hours, s = divmod(s, 3600)
@@ -584,7 +639,13 @@ def login_user(user: UserLogin, db: Session = Depends(get_db)):
     if not db_user or not verify_password(user.password, db_user.hashed_password):
         raise HTTPException(status_code=401, detail="Invalid email or password")
     token = create_access_token({"sub": db_user.email, "role": db_user.role})
-    return {"access_token": token, "token_type": "bearer"}
+    refresh = create_refresh_token({"sub": db_user.email, "role": db_user.role})
+    return {
+        "access_token": token,
+        "refresh_token": refresh,
+        "token_type": "bearer",
+        "expires_in": settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+    }
 
 
 @api_router.get("/auth/me", response_model=UserResponse, tags=["Authentication"])
@@ -600,7 +661,7 @@ def create_customer(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
-    new_customer = models.Customer(
+    new_customer = models.Client(
         name=customer.name,
         email=customer.email,
         phone=customer.phone,
@@ -614,13 +675,13 @@ def create_customer(
 
 
 @api_router.get("/customers", response_model=list[CustomerResponse], tags=["Customers"])
-def get_customers(db: Session = Depends(get_db)):
-    return db.query(models.Customer).all()
+def get_customers(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    return db.query(models.Client).all()
 
 
 @api_router.get("/customers/{customer_id}", response_model=CustomerResponse, tags=["Customers"])
 def get_customer(customer_id: int, db: Session = Depends(get_db)):
-    customer = db.query(models.Customer).filter(models.Customer.id == customer_id).first()
+    customer = db.query(models.Client).filter(models.Client.id == customer_id).first()
     if not customer:
         raise HTTPException(status_code=404, detail="Customer not found")
     return customer
@@ -628,7 +689,7 @@ def get_customer(customer_id: int, db: Session = Depends(get_db)):
 
 @api_router.put("/customers/{customer_id}", response_model=CustomerResponse, tags=["Customers"])
 def update_customer(customer_id: int, customer: CustomerCreate, db: Session = Depends(get_db)):
-    db_customer = db.query(models.Customer).filter(models.Customer.id == customer_id).first()
+    db_customer = db.query(models.Client).filter(models.Client.id == customer_id).first()
     if not db_customer:
         raise HTTPException(status_code=404, detail="Customer not found")
     db_customer.name = customer.name
@@ -642,7 +703,7 @@ def update_customer(customer_id: int, customer: CustomerCreate, db: Session = De
 
 @api_router.delete("/customers/{customer_id}", tags=["Customers"])
 def delete_customer(customer_id: int, db: Session = Depends(get_db)):
-    customer = db.query(models.Customer).filter(models.Customer.id == customer_id).first()
+    customer = db.query(models.Client).filter(models.Client.id == customer_id).first()
     if not customer:
         raise HTTPException(status_code=404, detail="Customer not found")
     db.delete(customer)
@@ -658,23 +719,40 @@ def create_invoice(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
+    import time as _time
+    invoice_number = f"INV-{current_user.id}-{int(_time.time())}"
     new_invoice = models.Invoice(
-        invoice_number=invoice.invoice_number,
-        customer_id=invoice.customer_id,
+        invoice_number=invoice_number,
+        client_id=invoice.client_id,
         user_id=current_user.id,
         due_date=invoice.due_date,
-        status=invoice.status,
-        total_amount=invoice.total_amount,
+        status="draft",
+        total_amount=0,
         notes=invoice.notes,
     )
     db.add(new_invoice)
+    db.commit()
+    db.refresh(new_invoice)
+
+    # Create line items
+    for item in invoice.items:
+        total_price = float(item.quantity) * float(item.unit_price)
+        new_item = models.InvoiceItem(
+            invoice_id=new_invoice.id,
+            description=item.description,
+            quantity=item.quantity,
+            unit_price=item.unit_price,
+            total_price=total_price,
+        )
+        db.add(new_item)
+        new_invoice.total_amount = float(new_invoice.total_amount or 0) + total_price
     db.commit()
     db.refresh(new_invoice)
     return new_invoice
 
 
 @api_router.get("/invoices", response_model=list[InvoiceResponse], tags=["Invoices"])
-def get_invoices(db: Session = Depends(get_db)):
+def get_invoices(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
     return db.query(models.Invoice).all()
 
 
@@ -692,10 +770,8 @@ def update_invoice(invoice_id: int, invoice: InvoiceCreate, db: Session = Depend
     if not db_invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
     db_invoice.invoice_number = invoice.invoice_number
-    db_invoice.customer_id = invoice.customer_id
+    db_invoice.client_id = invoice.client_id
     db_invoice.due_date = invoice.due_date
-    db_invoice.status = invoice.status
-    db_invoice.total_amount = invoice.total_amount
     db_invoice.notes = invoice.notes
     db.commit()
     db.refresh(db_invoice)
@@ -725,25 +801,59 @@ def update_invoice_status(invoice_id: int, status_update: InvoiceStatusUpdate, d
 
 @api_router.get("/invoices/{invoice_id}/pdf", tags=["Invoices"])
 def generate_invoice_pdf(invoice_id: int, db: Session = Depends(get_db)):
+    import tempfile
+    from fastapi.background import BackgroundTasks
     invoice = db.query(models.Invoice).filter(models.Invoice.id == invoice_id).first()
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
 
-    file_name = f"invoice_{invoice_id}.pdf"
-    file_path = os.path.join("app", file_name)
+    client = db.query(models.Client).filter(models.Client.id == invoice.client_id).first()
+    items = db.query(models.InvoiceItem).filter(models.InvoiceItem.invoice_id == invoice_id).all()
+
+    tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
+    file_path = tmp.name
+    tmp.close()
 
     c = canvas.Canvas(file_path, pagesize=letter)
-    c.setFont("Helvetica-Bold", 16)
-    c.drawString(200, 750, "INVOICE")
-    c.setFont("Helvetica", 12)
-    c.drawString(50, 700, f"Invoice Number: {invoice.invoice_number}")
-    c.drawString(50, 680, f"Customer ID: {invoice.customer_id}")
-    c.drawString(50, 660, f"Status: {invoice.status}")
-    c.drawString(50, 640, f"Total Amount: ₹{invoice.total_amount}")
-    c.drawString(50, 600, f"Notes: {invoice.notes or ''}")
+    c.setFont("Helvetica-Bold", 20)
+    c.drawString(50, 750, "INVOICE")
+    c.setFont("Helvetica-Bold", 12)
+    c.drawString(400, 750, f"#{invoice.invoice_number}")
+    c.line(50, 740, 550, 740)
+    c.setFont("Helvetica", 11)
+    c.drawString(50, 720, f"Client: {client.name if client else 'N/A'}")
+    if client and client.email:
+        c.drawString(50, 705, f"Email: {client.email}")
+    c.drawString(50, 690, f"Status: {invoice.status.upper()}")
+    if invoice.due_date:
+        c.drawString(50, 675, f"Due Date: {invoice.due_date.strftime('%d %b %Y') if hasattr(invoice.due_date, 'strftime') else str(invoice.due_date)[:10]}")
+    y = 645
+    c.setFont("Helvetica-Bold", 10)
+    c.drawString(50, y, "Description")
+    c.drawString(350, y, "Qty")
+    c.drawString(420, y, "Unit Price")
+    c.drawString(500, y, "Total")
+    c.line(50, y - 5, 550, y - 5)
+    y -= 20
+    c.setFont("Helvetica", 10)
+    for item in items:
+        c.drawString(50, y, str(item.description)[:45])
+        c.drawString(350, y, str(item.quantity))
+        c.drawString(420, y, f"₹{item.unit_price}")
+        c.drawString(500, y, f"₹{item.total_price}")
+        y -= 18
+    c.line(50, y, 550, y)
+    y -= 15
+    c.setFont("Helvetica-Bold", 11)
+    c.drawString(420, y, "Total:")
+    c.drawString(500, y, f"₹{invoice.total_amount}")
+    if invoice.notes:
+        c.setFont("Helvetica", 10)
+        c.drawString(50, y - 30, f"Notes: {invoice.notes}")
     c.save()
 
-    return FileResponse(file_path, media_type="application/pdf", filename=file_name)
+    file_name = f"invoice_{invoice.invoice_number}.pdf"
+    return FileResponse(file_path, media_type="application/pdf", filename=file_name, background=None)
 
 
 @api_router.post("/invoices/{invoice_id}/send-reminder", response_model=ReminderResponse, tags=["Invoices"])
@@ -752,7 +862,7 @@ def send_reminder(invoice_id: int, db: Session = Depends(get_db)):
     invoice = db.query(models.Invoice).filter(models.Invoice.id == invoice_id).first()
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
-    customer = db.query(models.Customer).filter(models.Customer.id == invoice.customer_id).first()
+    customer = db.query(models.Client).filter(models.Client.id == invoice.client_id).first()
     subject = f"Payment Reminder for Invoice {invoice.invoice_number}"
     message = (
         f"Hello,\n\nThis is a reminder that your invoice {invoice.invoice_number} "
@@ -815,7 +925,7 @@ def send_invoice_email(invoice_id: int, tone: str = "polite", db: Session = Depe
     invoice = db.query(models.Invoice).filter(models.Invoice.id == invoice_id).first()
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
-    customer = db.query(models.Customer).filter(models.Customer.id == invoice.customer_id).first()
+    customer = db.query(models.Client).filter(models.Client.id == invoice.client_id).first()
     if not customer or not customer.email:
         raise HTTPException(status_code=400, detail="Customer email not found")
 
@@ -851,7 +961,7 @@ def create_invoice_item(item: InvoiceItemCreate, db: Session = Depends(get_db)):
 
 
 @api_router.get("/invoice-items", response_model=list[InvoiceItemResponse], tags=["Invoice Items"])
-def get_invoice_items(db: Session = Depends(get_db)):
+def get_invoice_items(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
     return db.query(models.InvoiceItem).all()
 
 
@@ -905,7 +1015,7 @@ def create_recurring_billing(
     current_user: models.User = Depends(get_current_user),
 ):
     new_plan = models.RecurringBilling(
-        customer_id=data.customer_id,
+        client_id=data.client_id,
         user_id=current_user.id,
         title=data.title,
         amount=data.amount,
@@ -920,7 +1030,7 @@ def create_recurring_billing(
 
 
 @api_router.get("/recurring-billing", response_model=list[RecurringBillingResponse], tags=["Recurring Billing"])
-def get_recurring_billings(db: Session = Depends(get_db)):
+def get_recurring_billings(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
     return db.query(models.RecurringBilling).all()
 
 
@@ -937,7 +1047,7 @@ def update_recurring_billing(plan_id: int, data: RecurringBillingCreate, db: Ses
     plan = db.query(models.RecurringBilling).filter(models.RecurringBilling.id == plan_id).first()
     if not plan:
         raise HTTPException(status_code=404, detail="Recurring billing plan not found")
-    plan.customer_id = data.customer_id
+    plan.client_id = data.client_id
     plan.title = data.title
     plan.amount = data.amount
     plan.frequency = data.frequency
@@ -968,7 +1078,7 @@ def generate_invoice_from_recurring(plan_id: int, db: Session = Depends(get_db))
     invoice_number = f"REC-{plan.id}-{int(datetime.now().timestamp())}"
     new_invoice = models.Invoice(
         invoice_number=invoice_number,
-        customer_id=plan.customer_id,
+        client_id=plan.client_id,
         user_id=plan.user_id,
         due_date=plan.next_billing_date,
         status="draft",
@@ -985,7 +1095,7 @@ def generate_invoice_from_recurring(plan_id: int, db: Session = Depends(get_db))
 
 @api_router.get("/dashboard/summary", tags=["Dashboard"])
 def dashboard_summary(db: Session = Depends(get_db)):
-    total_customers = db.query(models.Customer).count()
+    total_customers = db.query(models.Client).count()
     total_invoices = db.query(models.Invoice).count()
     paid_invoices = db.query(models.Invoice).filter(models.Invoice.status == "paid").count()
     draft_invoices = db.query(models.Invoice).filter(models.Invoice.status == "draft").count()
@@ -1084,7 +1194,7 @@ def export_invoices_csv(db: Session = Depends(get_db)):
         writer.writerow(["ID", "Invoice Number", "Customer ID", "Status", "Total Amount", "Due Date", "Notes"])
         for invoice in invoices:
             writer.writerow([
-                invoice.id, invoice.invoice_number, invoice.customer_id,
+                invoice.id, invoice.invoice_number, invoice.client_id,
                 invoice.status, invoice.total_amount, invoice.due_date, invoice.notes,
             ])
     return FileResponse(file_path, media_type="text/csv", filename="invoices_export.csv")
@@ -1104,7 +1214,7 @@ def run_recurring_billing_scheduler(db: Session = Depends(get_db)):
         invoice_number = f"AUTO-{plan.id}-{int(datetime.now().timestamp())}"
         new_invoice = models.Invoice(
             invoice_number=invoice_number,
-            customer_id=plan.customer_id,
+            client_id=plan.client_id,
             user_id=plan.user_id,
             due_date=plan.next_billing_date,
             status="draft",
