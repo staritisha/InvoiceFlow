@@ -1,0 +1,386 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>{{ subject or 'Payment Reminder' }}</title>
+    <style>
+      /* Reset */
+      body,
+      table,
+      td,
+      p,
+      a {
+        margin: 0;
+        padding: 0;
+      }
+      body {
+        font-family: "Segoe UI", Arial, sans-serif;
+        background: #f0f4f8;
+      }
+      img {
+        border: 0;
+        display: block;
+      }
+      a {
+        text-decoration: none;
+      }
+
+      /* Tone-based color variables via inline styles set by Jinja */
+      /* friendly: blue-purple | professional: slate | urgent: orange-red | firm: dark-red */
+
+      .wrapper {
+        background: #f0f4f8;
+        padding: 32px 16px;
+      }
+      .container {
+        max-width: 600px;
+        margin: 0 auto;
+        background: #ffffff;
+        border-radius: 20px;
+        overflow: hidden;
+        box-shadow: 0 4px 40px rgba(0, 0, 0, 0.08);
+      }
+
+      /* === HEADER === */
+      .email-header {
+        padding: 32px 40px 28px;
+        text-align: center;
+        position: relative;
+      }
+      .brand-row {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 10px;
+        margin-bottom: 20px;
+      }
+      .brand-icon {
+        width: 36px;
+        height: 36px;
+        border-radius: 8px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 18px;
+        font-weight: 900;
+        color: white;
+      }
+      .brand-name {
+        font-size: 0.95rem;
+        font-weight: 700;
+      }
+      .reminder-badge {
+        display: inline-block;
+        padding: 5px 16px;
+        border-radius: 100px;
+        font-size: 0.7rem;
+        font-weight: 700;
+        letter-spacing: 0.8px;
+        text-transform: uppercase;
+        color: white;
+        margin-bottom: 20px;
+      }
+      .email-header h1 {
+        font-size: 1.55rem;
+        font-weight: 800;
+        color: #1e293b;
+        line-height: 1.3;
+      }
+      .email-header p {
+        font-size: 0.9rem;
+        color: #64748b;
+        margin-top: 8px;
+      }
+
+      /* === INVOICE CARD === */
+      .invoice-card {
+        margin: 0 32px 24px;
+        border-radius: 16px;
+        overflow: hidden;
+      }
+      .invoice-card-header {
+        padding: 16px 24px;
+        color: white;
+        font-size: 0.8rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }
+      .invoice-card-body {
+        background: #f8fafc;
+        border: 1px solid #e2e8f0;
+        border-top: none;
+        border-radius: 0 0 16px 16px;
+        padding: 20px 24px;
+      }
+      .invoice-detail-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 8px 0;
+        border-bottom: 1px solid #e2e8f0;
+        font-size: 0.875rem;
+      }
+      .invoice-detail-row:last-child {
+        border-bottom: none;
+        padding-bottom: 0;
+      }
+      .detail-label {
+        color: #64748b;
+      }
+      .detail-value {
+        color: #1e293b;
+        font-weight: 600;
+      }
+      .amount-due {
+        font-size: 1.6rem;
+        font-weight: 900;
+      }
+      .overdue-tag {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        background: #fef2f2;
+        color: #ef4444;
+        border: 1px solid #fecaca;
+        border-radius: 6px;
+        padding: 3px 10px;
+        font-size: 0.75rem;
+        font-weight: 700;
+      }
+
+      /* === AI MESSAGE === */
+      .ai-message {
+        margin: 0 32px 24px;
+      }
+      .ai-label {
+        font-size: 0.65rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+        color: #94a3b8;
+        margin-bottom: 10px;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .message-body {
+        background: #f8fafc;
+        border: 1px solid #e2e8f0;
+        border-radius: 12px;
+        padding: 20px;
+        font-size: 0.9rem;
+        color: #334155;
+        line-height: 1.7;
+      }
+
+      /* === CTA === */
+      .cta-section {
+        margin: 0 32px 28px;
+        text-align: center;
+      }
+      .cta-button {
+        display: inline-block;
+        padding: 14px 40px;
+        border-radius: 10px;
+        font-size: 1rem;
+        font-weight: 700;
+        color: white;
+        letter-spacing: 0.2px;
+      }
+      .cta-note {
+        font-size: 0.78rem;
+        color: #94a3b8;
+        margin-top: 10px;
+      }
+
+      /* === FOOTER === */
+      .email-footer {
+        background: #f8fafc;
+        border-top: 1px solid #e2e8f0;
+        padding: 20px 32px;
+        text-align: center;
+      }
+      .footer-ai-note {
+        font-size: 0.75rem;
+        color: #94a3b8;
+        margin-bottom: 8px;
+      }
+      .footer-links {
+        font-size: 0.75rem;
+      }
+      .footer-links a {
+        color: #6366f1;
+        margin: 0 8px;
+      }
+      .divider {
+        border: none;
+        border-top: 1px solid #e2e8f0;
+        margin: 16px 0;
+      }
+
+      @media (max-width: 600px) {
+        .email-header {
+          padding: 24px 20px 20px;
+        }
+        .invoice-card,
+        .ai-message,
+        .cta-section {
+          margin: 0 16px 20px;
+        }
+        .email-footer {
+          padding: 16px 20px;
+        }
+        .amount-due {
+          font-size: 1.3rem;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrapper">
+      <div class="container">
+        <!-- Header -->
+        <div
+          class="email-header"
+          style="background: {% if tone == 'friendly' %}linear-gradient(135deg, #ede9fe, #dbeafe){% elif tone == 'urgent' %}linear-gradient(135deg, #fff7ed, #fee2e2){% elif tone == 'firm' %}linear-gradient(135deg, #fef2f2, #fecaca){% else %}linear-gradient(135deg, #f0f9ff, #e0f2fe){% endif %};"
+        >
+          <!-- Brand -->
+          <div class="brand-row">
+            <span
+              class="brand-icon"
+              style="background: {% if tone == 'friendly' %}#6366f1{% elif tone == 'urgent' %}#f97316{% elif tone == 'firm' %}#dc2626{% else %}#0ea5e9{% endif %};"
+              >⚡</span
+            >
+            <span class="brand-name" style="color: #1e293b"
+              >{{ business_name or 'InvoiceFlow' }}</span
+            >
+          </div>
+
+          <!-- Reminder Badge -->
+          <div>
+            <span
+              class="reminder-badge"
+              style="background: {% if tone == 'friendly' %}#6366f1{% elif tone == 'urgent' %}#f97316{% elif tone == 'firm' %}#dc2626{% else %}#0ea5e9{% endif %};"
+            >
+              {% if tone == 'friendly' %}💙 Friendly Reminder {% elif tone ==
+              'urgent' %}⚠️ Urgent Notice {% elif tone == 'firm' %}🔴 Final
+              Demand {% else %}📋 Payment Reminder {% endif %}
+            </span>
+          </div>
+
+          <h1>{{ subject or 'Your payment is due' }}</h1>
+          <p>
+            Hi {{ client_name or 'there' }}, here's a quick heads-up about your
+            pending invoice.
+          </p>
+        </div>
+
+        <!-- Invoice Summary Card -->
+        <div class="invoice-card" style="margin-top: 28px">
+          <div
+            class="invoice-card-header"
+            style="background: {% if tone == 'friendly' %}#6366f1{% elif tone == 'urgent' %}#f97316{% elif tone == 'firm' %}#dc2626{% else %}#0ea5e9{% endif %};"
+          >
+            <span>Invoice #{{ invoice_number or 'N/A' }}</span>
+            {% if days_overdue and days_overdue > 0 %}
+            <span
+              style="
+                background: rgba(255, 255, 255, 0.2);
+                padding: 3px 10px;
+                border-radius: 100px;
+                font-size: 0.72rem;
+              "
+            >
+              {{ days_overdue }} days overdue
+            </span>
+            {% endif %}
+          </div>
+          <div class="invoice-card-body">
+            <div class="invoice-detail-row">
+              <span class="detail-label">Amount Due</span>
+              <span
+                class="detail-value amount-due"
+                style="color: {% if tone == 'firm' or tone == 'urgent' %}#dc2626{% elif tone == 'friendly' %}#6366f1{% else %}#0ea5e9{% endif %};"
+              >
+                {{ currency or '$' }}{{ "%.2f"|format(amount_due) if amount_due
+                else '0.00' }}
+              </span>
+            </div>
+            <div class="invoice-detail-row">
+              <span class="detail-label">Due Date</span>
+              <span class="detail-value">
+                {{ due_date.strftime('%B %d, %Y') if due_date else 'N/A' }} {%
+                if days_overdue and days_overdue > 0 %}
+                <span class="overdue-tag">⚠ Overdue</span>
+                {% endif %}
+              </span>
+            </div>
+            <div class="invoice-detail-row">
+              <span class="detail-label">Invoice Date</span>
+              <span class="detail-value"
+                >{{ issue_date.strftime('%B %d, %Y') if issue_date else 'N/A'
+                }}</span
+              >
+            </div>
+            {% if description %}
+            <div class="invoice-detail-row">
+              <span class="detail-label">Description</span>
+              <span class="detail-value">{{ description }}</span>
+            </div>
+            {% endif %}
+          </div>
+        </div>
+
+        <!-- AI-Generated Message -->
+        <div class="ai-message">
+          <div class="ai-label">
+            <span>✨</span>
+            <span>AI-Personalised Message</span>
+          </div>
+          <div class="message-body">
+            {{ body | safe if body else 'Please find your invoice details above.
+            Kindly arrange payment at your earliest convenience.' }}
+          </div>
+        </div>
+
+        <!-- CTA Button -->
+        <div class="cta-section">
+          <a
+            href="{{ payment_url or '#' }}"
+            class="cta-button"
+            style="background: {% if tone == 'friendly' %}linear-gradient(135deg, #6366f1, #818cf8){% elif tone == 'urgent' %}linear-gradient(135deg, #f97316, #ef4444){% elif tone == 'firm' %}linear-gradient(135deg, #dc2626, #991b1b){% else %}linear-gradient(135deg, #0ea5e9, #6366f1){% endif %};"
+          >
+            {{ cta or 'Pay Invoice Now' }} →
+          </a>
+          <div class="cta-note">
+            Secure payment powered by Stripe · Takes less than 2 minutes
+          </div>
+        </div>
+
+        <hr class="divider" style="margin: 0 32px" />
+
+        <!-- Footer -->
+        <div class="email-footer">
+          <div class="footer-ai-note">
+            🤖 This reminder was optimised by
+            <strong>InvoiceFlow AI</strong> for better payment response.
+          </div>
+          <div class="footer-links">
+            <a href="{{ view_invoice_url or '#' }}">View Invoice</a>
+            <a href="{{ dispute_url or '#' }}">Dispute</a>
+            <a href="{{ unsubscribe_url or '#' }}">Unsubscribe</a>
+          </div>
+          <div style="font-size: 0.7rem; color: #cbd5e1; margin-top: 10px">
+            Sent by {{ business_name or 'InvoiceFlow' }} · {{ business_email or
+            '' }}
+          </div>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>

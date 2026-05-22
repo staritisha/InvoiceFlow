@@ -1,4 +1,4 @@
-const BASE_URL = "http://127.0.0.1:8000";
+const BASE_URL = "http://127.0.0.1:8000/api/v1";
 
 async function request(path: string, options: RequestInit = {}) {
   const token =
@@ -23,15 +23,7 @@ async function request(path: string, options: RequestInit = {}) {
 }
 
 export const auth = {
-  login: (email: string, password: string) =>
-    request("/auth/login", {
-      method: "POST",
-      body: JSON.stringify({
-        full_name: "Login User",
-        email,
-        password,
-      }),
-    }),
+  
 
 login: (email: string, password: string) =>
   request("/auth/login", {
