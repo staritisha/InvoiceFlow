@@ -595,7 +595,7 @@ async def ai_weekly_summary(
         logger.error(f"AI weekly summary failed: {e}")
         return {"summary": "Could not generate summary at this time. Please try again."}
 
-
+def _human_uptime(seconds: float) -> str:
     s = int(seconds)
     days, s = divmod(s, 86400)
     hours, s = divmod(s, 3600)
@@ -613,8 +613,6 @@ async def ai_weekly_summary(
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  API v1 ROUTER
-# ═══════════════════════════════════════════════════════════════════════════════
-
 api_router = APIRouter(prefix="/api/v1")
 
 
@@ -681,7 +679,7 @@ def create_customer(
 
 @api_router.get("/customers", response_model=list[CustomerResponse], tags=["Customers"])
 def get_customers(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
-    return db.query(models.Client).all()
+    return db.query(models.Client).filter(models.Client.user_id == current_user.id).all()
 
 
 @api_router.get("/customers/{customer_id}", response_model=CustomerResponse, tags=["Customers"])
@@ -758,7 +756,7 @@ def create_invoice(
 
 @api_router.get("/invoices", response_model=list[InvoiceResponse], tags=["Invoices"])
 def get_invoices(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
-    return db.query(models.Invoice).all()
+    return db.query(models.Invoice).filter(models.Invoice.user_id == current_user.id).all()
 
 
 @api_router.get("/invoices/{invoice_id}", response_model=InvoiceResponse, tags=["Invoices"])
@@ -1036,7 +1034,7 @@ def create_recurring_billing(
 
 @api_router.get("/recurring-billing", response_model=list[RecurringBillingResponse], tags=["Recurring Billing"])
 def get_recurring_billings(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
-    return db.query(models.RecurringBilling).all()
+    return db.query(models.RecurringBilling).filter(models.RecurringBilling.user_id == current_user.id).all()
 
 
 @api_router.get("/recurring-billing/{plan_id}", response_model=RecurringBillingResponse, tags=["Recurring Billing"])
@@ -1250,7 +1248,7 @@ app.include_router(api_router)
 # ── Backward-compatible legacy root-level aliases ─────────────────────────────
 # Keeps existing frontends/clients working while the /api/v1 routes are adopted.
 
-@app.get("/auth/register", response_model=UserResponse, include_in_schema=False)
+@app.post("/auth/register", response_model=UserResponse, include_in_schema=False)
 def _legacy_register(user: UserCreate, db: Session = Depends(get_db)):
     return register_user(user, db)
 

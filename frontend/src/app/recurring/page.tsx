@@ -44,9 +44,7 @@ export default function RecurringPage() {
   }
 
   function openEdit(r: RecurringBilling) {
-    setForm({ customer_id: r.customer_id, description: r.description, amount: r.amount, frequency: r.frequency, next_billing_date: r.next_billing_date.split('T')[0] });
-    setEditing(r);
-    setModal('edit');
+setForm({ customer_id: (r as any).client_id ?? r.customer_id, description: r.description, amount: r.amount, frequency: r.frequency, next_billing_date: r.next_billing_date.split('T')[0] });    setModal('edit');
   }
 
   async function handleSave() {

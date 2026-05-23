@@ -155,7 +155,7 @@ export default function CustomersPage() {
                         <td><span style={{ color: 'var(--text-muted)', fontSize: 13 }}>{c.company || '—'}</span></td>
                         <td><span className="mono" style={{ fontSize: 12 }}>{c.email}</span></td>
                         <td><span style={{ color: 'var(--text-muted)', fontSize: 13 }}>{c.phone || '—'}</span></td>
-                        <td><span style={{ color: 'var(--text-muted)', fontSize: 12 }}>{new Date(c.created_at).toLocaleDateString('en-IN')}</span></td>
+                        <td><span style={{ color: 'var(--text-muted)', fontSize: 12 }}>{c.created_at ? new Date(c.created_at).toLocaleDateString('en-IN') : '—'}</span></td>
                         <td>
                           <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
                             <button className="btn btn-ghost btn-sm" onClick={() => openEdit(c)}>Edit</button>

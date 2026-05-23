@@ -197,6 +197,19 @@ export const dashboard = {
   },
 };
 
+export type DashboardAnalytics = {
+  total_customers: number;
+  total_invoices: number;
+  paid_invoices: number;
+  draft_invoices: number;
+  overdue_invoices: number;
+  total_revenue: number;
+  unpaid_amount: number;
+  pending_amount: number;
+  recent_invoices: Invoice[];
+  monthly_revenue: { month: string; amount: number }[];
+};
+
 
 
 export type RecurringCreate = {
@@ -209,6 +222,7 @@ export type RecurringCreate = {
 
 export type RecurringBilling = {
   id: number;
+  client_id?: number;       // ✅ add this line
   customer_id: number;
   user_id: number;
   description: string;
@@ -234,30 +248,30 @@ export const recurring = {
   },
 
   create: (data: RecurringCreate) =>
-    request("/recurring-billing", {
-      method: "POST",
-      body: JSON.stringify({
-        customer_id: data.customer_id,
-        title: data.description,
-        amount: data.amount,
-        frequency: data.frequency,
-        next_billing_date: `${data.next_billing_date}T00:00:00`,
-        is_active: true,
-      }),
+  request("/recurring-billing", {
+    method: "POST",
+    body: JSON.stringify({
+      client_id: data.customer_id,  // ✅ changed
+      title: data.description,
+      amount: data.amount,
+      frequency: data.frequency,
+      next_billing_date: `${data.next_billing_date}T00:00:00`,
+      is_active: true,
     }),
+  }),
 
-  update: (id: number, data: RecurringCreate) =>
-    request(`/recurring-billing/${id}`, {
-      method: "PUT",
-      body: JSON.stringify({
-        customer_id: data.customer_id,
-        title: data.description,
-        amount: data.amount,
-        frequency: data.frequency,
-        next_billing_date: `${data.next_billing_date}T00:00:00`,
-        is_active: true,
-      }),
+update: (id: number, data: RecurringCreate) =>
+  request(`/recurring-billing/${id}`, {
+    method: "PUT",
+    body: JSON.stringify({
+      client_id: data.customer_id,  // ✅ changed
+      title: data.description,
+      amount: data.amount,
+      frequency: data.frequency,
+      next_billing_date: `${data.next_billing_date}T00:00:00`,
+      is_active: true,
     }),
+  }),
 
   delete: (id: number) =>
     request(`/recurring-billing/${id}`, {
