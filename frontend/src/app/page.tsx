@@ -61,8 +61,7 @@ const AI_TIPS = [
 async function getAIWeeklySummary(): Promise<string> {
   try {
     const token = localStorage.getItem('token');
-    const res = await fetch('http://127.0.0.1:8000/api/v1/ai/weekly-summary', {
-      method: 'POST',
+    const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8000/api/v1'}/ai/weekly-summary`, {      method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
