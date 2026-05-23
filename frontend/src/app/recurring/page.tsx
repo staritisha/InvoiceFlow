@@ -8,8 +8,7 @@ import { recurring as api, customers as custApi, type RecurringBilling, type Cus
 const FREQ_LABELS: Record<string, string> = { weekly: '7d', monthly: '30d', quarterly: '90d', yearly: '365d' };
 const FREQ_COLORS: Record<string, string> = { weekly: 'badge-green', monthly: 'badge-blue', quarterly: 'badge-purple', yearly: 'badge-yellow' };
 
-const EMPTY: RecurringCreate = { customer_id: 0, description: '', amount: 0, frequency: 'monthly', next_billing_date: '' };
-
+const EMPTY: RecurringCreate = { client_id: 0, title: '', description: '', amount: 0, frequency: 'monthly', next_billing_date: '' };
 export default function RecurringPage() {
   const router = useRouter();
   const [list, setList] = useState<RecurringBilling[]>([]);
@@ -48,7 +47,7 @@ setForm({ customer_id: (r as any).client_id ?? r.customer_id, description: r.des
   }
 
   async function handleSave() {
-    if (!form.customer_id || !form.description || !form.amount) {
+    if (!form.client_id || !form.title || !form.description || !form.amount) {
       setToast({ msg: 'Fill all required fields', type: 'error' }); return;
     }
     setSaving(true);
@@ -203,8 +202,8 @@ setForm({ customer_id: (r as any).client_id ?? r.customer_id, description: r.des
               <div className="form-group">
                 <label className="form-label">Customer *</label>
                 <select className="form-input form-select" value={form.customer_id || ''} onChange={e => setForm({ ...form, customer_id: Number(e.target.value) })}>
-                  <option value="">Select customer...</option>
-                  {customers.map(c => <option key={c.id} value={c.id}>{c.name}{c.company ? ` — ${c.company}` : ''}</option>)}
+                  <option value={form.client_id || ''}
+                    onChange={e => setForm({ ...form, client_id: Number(e.target.value) })}
                 </select>
               </div>
               <div className="form-group">
@@ -213,6 +212,7 @@ setForm({ customer_id: (r as any).client_id ?? r.customer_id, description: r.des
               </div>
               <div className="grid-2">
                 <div className="form-group">
+                  <input className="form-input" placeholder="e.g. Monthly Retainer" value={form.title} onChange={e => setForm({ ...form, title: e.target.value })} />
                   <label className="form-label">Amount (₹) *</label>
                   <input className="form-input" type="number" min={0} step={0.01} value={form.amount || ''} onChange={e => setForm({ ...form, amount: Number(e.target.value) })} />
                 </div>
