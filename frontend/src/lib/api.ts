@@ -213,7 +213,8 @@ export type DashboardAnalytics = {
 
 
 export type RecurringCreate = {
-  customer_id: number;
+  client_id: number;
+  title: string;
   description: string;
   amount: number;
   frequency: string;
