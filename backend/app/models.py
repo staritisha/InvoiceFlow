@@ -4,8 +4,9 @@
 #  Every table is designed for realtime dashboards, AI features, and future
 #  enterprise expansion without schema migration pain.
 # ═══════════════════════════════════════════════════════════════════════════════
-
 from __future__ import annotations
+
+from datetime import datetime, timezone as tz
 
 import uuid
 from datetime import datetime, timezone
@@ -26,9 +27,20 @@ from app.database import Base
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class TimestampMixin:
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+    created_at = Column(
+    DateTime(timezone=True),
+    server_default=func.now(),
+    default=lambda: datetime.now(tz.utc),
+    nullable=False
+)
 
+updated_at = Column(
+    DateTime(timezone=True),
+    server_default=func.now(),
+    default=lambda: datetime.now(tz.utc),
+    onupdate=lambda: datetime.now(tz.utc),
+    nullable=False
+)
 
 class SoftDeleteMixin:
     is_deleted = Column(Boolean, default=False, nullable=False, index=True)
