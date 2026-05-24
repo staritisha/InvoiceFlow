@@ -223,9 +223,10 @@ export type RecurringCreate = {
 
 export type RecurringBilling = {
   id: number;
-  client_id?: number;       // ✅ add this line
+  client_id?: number;
   customer_id: number;
   user_id: number;
+  title?: string;
   description: string;
   amount: number;
   frequency: string;
@@ -252,7 +253,7 @@ export const recurring = {
   request("/recurring-billing", {
     method: "POST",
     body: JSON.stringify({
-      client_id: data.customer_id,  // ✅ changed
+      client_id: data.client_id || 0,
       title: data.description,
       amount: data.amount,
       frequency: data.frequency,
@@ -265,7 +266,7 @@ update: (id: number, data: RecurringCreate) =>
   request(`/recurring-billing/${id}`, {
     method: "PUT",
     body: JSON.stringify({
-      client_id: data.customer_id,  // ✅ changed
+      client_id: data.client_id || 0,
       title: data.description,
       amount: data.amount,
       frequency: data.frequency,

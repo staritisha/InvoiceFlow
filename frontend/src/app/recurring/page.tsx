@@ -43,8 +43,10 @@ export default function RecurringPage() {
   }
 
   function openEdit(r: RecurringBilling) {
-setForm({ client_id: r.client_id ?? 0, title: r.title ?? '', description: r.description, amount: r.amount, frequency: r.frequency, next_billing_date: r.next_billing_date.split('T')[0] });  }
-
+    setForm({ client_id: r.client_id ?? 0, title: r.title ?? '', description: r.description, amount: r.amount, frequency: r.frequency, next_billing_date: r.next_billing_date.split('T')[0] });
+    setEditing(r);
+    setModal('edit');
+  }
   async function handleSave() {
     if (!form.client_id || !form.title || !form.description || !form.amount) {
       setToast({ msg: 'Fill all required fields', type: 'error' }); return;
