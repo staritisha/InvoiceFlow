@@ -1,8 +1,5 @@
-"""
-Tests for authentication endpoints.
-Run: pytest app/tests/test_auth.py -v
-"""
 import pytest
+import uuid
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -23,11 +20,17 @@ def override_get_db():
 
 app.dependency_overrides[get_db] = override_get_db
 
+TEST_EMAIL = f"test_{uuid.uuid4().hex[:8]}@example.com"
+TEST_PASSWORD = "TestPass123"
+
 @pytest.fixture(scope="module", autouse=True)
 def setup_db():
     Base.metadata.create_all(bind=engine)
     yield
-    Base.metadata.drop_all(bind=engine)
+    try:
+        Base.metadata.drop_all(bind=engine)
+    except Exception:
+        pass
 
 @pytest.fixture
 def client():
@@ -35,8 +38,8 @@ def client():
 
 def test_register(client):
     response = client.post("/api/v1/auth/register", json={
-        "email": "test@example.com",
-        "password": "TestPass123",
+        "email": TEST_EMAIL,
+        "password": TEST_PASSWORD,
         "full_name": "Test User",
     })
     assert response.status_code == 200
@@ -44,8 +47,8 @@ def test_register(client):
 
 def test_login(client):
     response = client.post("/api/v1/auth/login", json={
-        "email": "test@example.com",
-        "password": "TestPass123",
+        "email": TEST_EMAIL,
+        "password": TEST_PASSWORD,
     })
     assert response.status_code == 200
     data = response.json()
@@ -54,13 +57,13 @@ def test_login(client):
 
 def test_get_me(client):
     login = client.post("/api/v1/auth/login", json={
-        "email": "test@example.com",
-        "password": "TestPass123",
+        "email": TEST_EMAIL,
+        "password": TEST_PASSWORD,
     })
     token = login.json()["access_token"]
     response = client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {token}"})
     assert response.status_code == 200
-    assert response.json()["email"] == "test@example.com"
+    assert response.json()["email"] == TEST_EMAIL
 
 def test_invalid_login(client):
     response = client.post("/api/v1/auth/login", json={
