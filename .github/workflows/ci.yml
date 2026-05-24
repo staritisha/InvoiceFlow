@@ -19,7 +19,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install dependencies
-        run: pip install -r requirements.txt pytest httpx
+        run: pip install -r requirements.txt pytest httpx psutil
       - name: Lint with ruff
         run: pip install ruff && ruff check app/main.py app/auth.py app/models.py app/schemas.py app/database.py --ignore E501,E402,F401
       - name: Run tests
