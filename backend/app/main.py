@@ -113,7 +113,7 @@ def _print_startup_banner() -> None:
     logger.info(f"  Environment : {ENVIRONMENT}")
     logger.info(f"  AI Provider : {AI_PROVIDER}  ({AI_MODEL})")
     logger.info(f"  Redis       : {redis_status}")
-    logger.info(f"  Scheduler   : Running")
+    logger.info("  Scheduler   : Running")
     logger.info(f"  WebSockets  : {'Enabled' if ENABLE_WEBSOCKETS else 'Disabled'}")
     logger.info(f"  AI Module   : {'Enabled' if ENABLE_AI else 'Disabled'}")
     logger.info(f"  Workflows   : {'Enabled' if ENABLE_WORKFLOWS else 'Disabled'}")
@@ -366,7 +366,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     safe_errors = []
     for e in exc.errors():
         safe_errors.append({
-            "field": " → ".join(str(l) for l in e.get("loc", [])),
+            "field": " → ".join(str(loc) for loc in e.get("loc", [])),
             "message": e.get("msg", "Invalid value"),
         })
     logger.warning(f"Validation error on {request.url.path}: {safe_errors}")
@@ -1209,7 +1209,7 @@ def export_invoices_csv(db: Session = Depends(get_db)):
 def run_recurring_billing_scheduler(db: Session = Depends(get_db)):
     today = datetime.now(timezone.utc)
     plans = db.query(models.RecurringBilling).filter(
-        models.RecurringBilling.is_active == True,
+        models.RecurringBilling.is_active,
         models.RecurringBilling.next_billing_date <= today,
     ).all()
     created_invoices = []

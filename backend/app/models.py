@@ -6,7 +6,6 @@
 # ═══════════════════════════════════════════════════════════════════════════════
 from __future__ import annotations
 
-from datetime import datetime, timezone as tz
 
 import uuid
 from datetime import datetime, timezone
