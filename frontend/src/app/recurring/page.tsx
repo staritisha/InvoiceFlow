@@ -200,10 +200,19 @@ setForm({ client_id: r.client_id ?? 0, title: r.title ?? '', description: r.desc
             <div className="modal-body">
               <div className="form-group">
                 <label className="form-label">Customer *</label>
-                <select className="form-input form-select" value={form.customer_id || ''} onChange={e => setForm({ ...form, customer_id: Number(e.target.value) })}>
-                  <option value={form.client_id || ''}
-                    onChange={e => setForm({ ...form, client_id: Number(e.target.value) })}
-                </select>
+                <select
+  className="form-input form-select"
+  value={form.client_id || ''}
+  onChange={e => setForm({ ...form, client_id: Number(e.target.value) })}
+>
+  <option value="">Select customer</option>
+
+  {customers.map(c => (
+    <option key={c.id} value={c.id}>
+      {c.name}
+    </option>
+  ))}
+</select>
               </div>
               <div className="form-group">
                 <label className="form-label">Description *</label>
