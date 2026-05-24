@@ -149,15 +149,12 @@ export default function LoginPage() {
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               required
-              
             />
-            <input
-            type="password"
-            placeholder="••••••••"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-  required
-/>
+            {mode === 'register' && (
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6 }}>
+                Min 8 characters, 1 uppercase letter, 1 number
+              </div>
+            )}
           </div>
 
           {error && (
