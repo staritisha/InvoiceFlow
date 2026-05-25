@@ -1,6 +1,3 @@
-python3 << 'EOF'
-readme = """# InvoiceFlow
-
 ![CI](https://github.com/staritisha/InvoiceFlow/actions/workflows/ci.yml/badge.svg)
 ![FastAPI](https://img.shields.io/badge/FastAPI-009688?style=flat-square&logo=fastapi&logoColor=white)
 ![Next.js](https://img.shields.io/badge/Next.js_14-black?style=flat-square&logo=next.js)
