@@ -12,7 +12,6 @@ from typing import List, Literal, Optional
 from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-
 class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(
@@ -120,13 +119,26 @@ class Settings(BaseSettings):
     demo_user_email: str = "demo@invoiceflow.ai"
     demo_user_password: str = "demo1234"
 
-    # ── CORS ──────────────────────────────────────────────────────────────────
+   # ── CORS ──────────────────────────────────────────────────────────────────────
 
     allowed_origins: List[str] = [
         "http://localhost:3000",
         "http://localhost:5173",
         "http://localhost:8080",
     ]
+
+    @field_validator("allowed_origins", mode="before")
+    @classmethod
+    def parse_origins(cls, v):
+        if isinstance(v, str):
+            return [i.strip() for i in v.split(",")]
+        return v
+
+allowed_origins: List[str] = [
+    "http://localhost:3000",
+    "http://localhost:5173",
+    "http://localhost:8080",
+]
 
     # ── Rate Limiting ─────────────────────────────────────────────────────────
 
