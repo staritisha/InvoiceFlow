@@ -325,15 +325,7 @@ class AIUsageMiddleware(BaseHTTPMiddleware):
 
 # ── Register Middleware (outermost → innermost) ────────────────────────────────
 
-app.add_middleware(SecurityHeadersMiddleware)
-app.add_middleware(
-    TrustedHostMiddleware,
-    allowed_hosts=["*"],  # Tighten this in production
-)
-app.add_middleware(GZipMiddleware, minimum_size=1000)
-app.add_middleware(RateLimitMiddleware)
-app.add_middleware(RequestLoggingMiddleware)
-app.add_middleware(AIUsageMiddleware)
+# ✅ Move CORSMiddleware to be registered FIRST
 app.add_middleware(
     CORSMiddleware,
     allow_origins=os.getenv("ALLOWED_ORIGINS", "http://localhost:3000").split(","),
@@ -342,6 +334,14 @@ app.add_middleware(
     allow_headers=["*"],
     expose_headers=["X-Request-ID", "X-Response-Time"],
 )
+
+# Then the rest AFTER
+app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=["*"])
+app.add_middleware(GZipMiddleware, minimum_size=1000)
+app.add_middleware(RateLimitMiddleware)
+app.add_middleware(RequestLoggingMiddleware)
+app.add_middleware(AIUsageMiddleware)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
