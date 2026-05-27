@@ -134,11 +134,7 @@ class Settings(BaseSettings):
             return [i.strip() for i in v.split(",")]
         return v
 
-allowed_origins: List[str] = [
-    "http://localhost:3000",
-    "http://localhost:5173",
-    "http://localhost:8080",
-]
+
 
     # ── Rate Limiting ─────────────────────────────────────────────────────────
 
