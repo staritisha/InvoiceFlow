@@ -21,3 +21,5 @@ alembic/versions/*.pyc
 *.zip
 **/__pycache__/
 **/*.pyc
+.env.local
+**/.env.local
