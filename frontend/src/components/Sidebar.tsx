@@ -5,7 +5,7 @@ import { useEffect, useState } from 'react';
 import AICommandCenter from './AICommandCenter';
 
 const navItems = [
-  { href: '/',           label: 'Dashboard',  icon: '▦' },
+  { href: '/dashboard',           label: 'Dashboard',  icon: '▦' },
   { href: '/customers',  label: 'Customers',  icon: '◎' },
   { href: '/invoices',   label: 'Invoices',   icon: '◈' },
   { href: '/recurring',  label: 'Recurring',  icon: '↻' },
