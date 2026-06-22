@@ -18,7 +18,7 @@ import pyotp
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response, status
 from jose import JWTError, jwt
 from passlib.context import CryptContext
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
@@ -53,6 +53,69 @@ _BRUTE_LOCKOUT_MINUTES = 15    # duration of IP-level cool-down
 _RESEND_COOLDOWN_SECS  = 60    # minimum gap between resend-verification requests
 
 # ═══════════════════════════════════════════════════════════════════════════════
+#  PASSWORD VALIDATION
+#  Single source of truth — used by RegisterRequest, ResetPasswordRequest,
+#  and ChangePasswordRequest.  Pydantic calls this automatically via
+#  @field_validator; it is also importable for manual checks elsewhere.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Common / dictionary passwords that pass length+complexity checks but are
+# trivially guessable.  Checked case-insensitively after stripping.
+_BLOCKED_PASSWORDS: frozenset[str] = frozenset({
+    "password", "password1", "password123", "passw0rd",
+    "12345678", "123456789", "1234567890",
+    "qwerty123", "qwerty1", "qwertyui",
+    "abcdefg1", "abcdef12", "abc12345",
+    "iloveyou", "welcome1", "monkey123",
+    "letmein1", "admin123", "admin1234",
+    "dragon12", "master12", "sunshine1",
+    "princess", "football", "shadow123",
+    "superman", "batman12", "trustno1",
+    "michael1", "jessica1", "charlie1",
+    "donald12", "starwars", "hello123",
+    "mustang1", "access12", "696969ab",
+    "test1234", "test123a",
+})
+
+
+def _validate_password(v: str) -> str:
+    """
+    Enforce password complexity rules.  Raise ValueError with a clear message
+    on the first failing rule so Pydantic surfaces it as a 422 validation error.
+
+    Rules:
+      1. Minimum 8 characters  (enforced by Field(min_length=8) on the field itself)
+      2. At least one uppercase letter
+      3. At least one lowercase letter
+      4. At least one digit
+      5. At least one special character  (!@#$%^&*…)
+      6. Not a known common / dictionary password
+    """
+    stripped = v.strip()
+
+    if not any(c.isupper() for c in stripped):
+        raise ValueError("Password must contain at least one uppercase letter (A-Z)")
+
+    if not any(c.islower() for c in stripped):
+        raise ValueError("Password must contain at least one lowercase letter (a-z)")
+
+    if not any(c.isdigit() for c in stripped):
+        raise ValueError("Password must contain at least one digit (0-9)")
+
+    if not re.search(r"[!@#$%^&*()\-_=+\[\]{};:'\",.<>/?\\|`~]", stripped):
+        raise ValueError(
+            "Password must contain at least one special character "
+            "(!  @  #  $  %  ^  &  *  etc.)"
+        )
+
+    if stripped.lower() in _BLOCKED_PASSWORDS:
+        raise ValueError(
+            "This password is too common. Please choose a more unique password."
+        )
+
+    return v
+
+# ═══════════════════════════════════════════════════════════════════════════════
 #  REQUEST / RESPONSE SCHEMAS  (auth-router-local; broader ones live in schemas.py)
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -66,13 +129,10 @@ class RegisterRequest(BaseModel):
     country:           Optional[str] = None
     subscription_tier: str        = "free"
 
-    @staticmethod
-    def _validate_password(v: str) -> str:
-        if not any(c.isupper() for c in v):
-            raise ValueError("Password must contain at least one uppercase letter")
-        if not any(c.isdigit() for c in v):
-            raise ValueError("Password must contain at least one digit")
-        return v
+    @field_validator("password")
+    @classmethod
+    def password_strength(cls, v: str) -> str:
+        return _validate_password(v)
 
 
 class LoginRequest(BaseModel):
@@ -94,10 +154,20 @@ class ResetPasswordRequest(BaseModel):
     token:        str
     new_password: str = Field(min_length=8)
 
+    @field_validator("new_password")
+    @classmethod
+    def password_strength(cls, v: str) -> str:
+        return _validate_password(v)
+
 
 class ChangePasswordRequest(BaseModel):
     current_password: str
     new_password:     str = Field(min_length=8)
+
+    @field_validator("new_password")
+    @classmethod
+    def password_strength(cls, v: str) -> str:
+        return _validate_password(v)
 
 
 class TwoFactorVerifyRequest(BaseModel):

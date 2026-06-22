@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import datetime
 from decimal import Decimal
 from typing import Any, Optional
+import re
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
 
@@ -25,6 +26,68 @@ class AppBase(BaseModel):
         arbitrary_types_allowed=True,
         use_enum_values=True,
     )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  PASSWORD VALIDATION  (shared by all schemas that accept a new password)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# fmt: off
+_BLOCKED_PASSWORDS: frozenset[str] = frozenset({
+    "password", "password1", "password123", "passw0rd",
+    "12345678", "123456789", "1234567890",
+    "qwerty123", "qwerty1", "qwertyui",
+    "abcdefg1", "abcdef12", "abc12345",
+    "iloveyou", "welcome1", "monkey123",
+    "letmein1", "admin123", "admin1234",
+    "dragon12", "master12", "sunshine1",
+    "princess", "football", "shadow123",
+    "superman", "batman12", "trustno1",
+    "michael1", "jessica1", "charlie1",
+    "donald12", "starwars", "hello123",
+    "mustang1", "access12", "test1234",
+    "test123a",
+})
+# fmt: on
+
+
+def validate_password_strength(v: str) -> str:
+    """
+    Enforce password complexity. Used by @field_validator in every schema
+    that accepts a new password so validation runs automatically on every
+    Pydantic parse — registration, reset, and change-password flows.
+
+    Rules (all required):
+      1. Minimum 8 characters        (enforced by Field(min_length=8))
+      2. At least one uppercase A-Z
+      3. At least one lowercase a-z
+      4. At least one digit 0-9
+      5. At least one special character
+      6. Not a known dictionary/common password
+    """
+    stripped = v.strip()
+
+    if not any(c.isupper() for c in stripped):
+        raise ValueError("Password must contain at least one uppercase letter (A-Z)")
+
+    if not any(c.islower() for c in stripped):
+        raise ValueError("Password must contain at least one lowercase letter (a-z)")
+
+    if not any(c.isdigit() for c in stripped):
+        raise ValueError("Password must contain at least one digit (0-9)")
+
+    if not re.search(r"[!@#$%^&*()\-_=+\[\]{};:'\",.<>/?\\|`~]", stripped):
+        raise ValueError(
+            "Password must contain at least one special character "
+            "(!  @  #  $  %  ^  &  *  etc.)"
+        )
+
+    if stripped.lower() in _BLOCKED_PASSWORDS:
+        raise ValueError(
+            "This password is too common. Please choose a more unique password."
+        )
+
+    return v
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -87,6 +150,11 @@ class PasswordChangeRequest(AppBase):
     current_password: str
     new_password:     str = Field(min_length=8)
 
+    @field_validator("new_password")
+    @classmethod
+    def password_strength(cls, v: str) -> str:
+        return validate_password_strength(v)
+
 
 class PasswordResetRequest(AppBase):
     email: EmailStr
@@ -95,6 +163,11 @@ class PasswordResetRequest(AppBase):
 class PasswordResetConfirm(AppBase):
     token:        str
     new_password: str = Field(min_length=8)
+
+    @field_validator("new_password")
+    @classmethod
+    def password_strength(cls, v: str) -> str:
+        return validate_password_strength(v)
 
 
 class TokenPermissions(AppBase):
@@ -136,11 +209,7 @@ class UserCreate(UserBase):
     @field_validator("password")
     @classmethod
     def password_strength(cls, v: str) -> str:
-        if not any(c.isupper() for c in v):
-            raise ValueError("Password must contain at least one uppercase letter")
-        if not any(c.isdigit() for c in v):
-            raise ValueError("Password must contain at least one digit")
-        return v
+        return validate_password_strength(v)
 
 
 class UserUpdate(AppBase):

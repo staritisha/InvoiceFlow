@@ -59,17 +59,33 @@ const AI_TIPS = [
 ];
 
 async function getAIWeeklySummary(): Promise<string> {
+  // This endpoint calls an LLM internally — allow 30 s for generation.
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 30_000);
+
   try {
     const token = localStorage.getItem('token');
-    const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8000/api/v1'}/ai/weekly-summary`, {      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
-    });
+    const res = await fetch(
+      `${process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8000/api/v1'}/ai/weekly-summary`,
+      {
+        method: 'POST',
+        signal: controller.signal,
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      }
+    );
     const data = await res.json();
     return data.summary || '';
-  } catch { return ''; }
+  } catch (err) {
+    if (err instanceof DOMException && err.name === 'AbortError') {
+      return 'Summary generation timed out. Please try again in a moment.';
+    }
+    return '';
+  } finally {
+    clearTimeout(timeoutId);
+  }
 }
 
 export default function DashboardPage() {

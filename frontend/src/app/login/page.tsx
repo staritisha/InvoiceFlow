@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { auth } from '@/lib/api';
 
@@ -8,12 +8,37 @@ export default function LoginPage() {
   const router = useRouter();
 
   const [mode, setMode] = useState<'login' | 'register'>('login');
-  const [nameOrEmail, setNameOrEmail] = useState('');
+  const [loginEmail, setLoginEmail] = useState('');
+  const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  // Distinguishes a "registered OK but auto-login failed" state so the user
+  // knows they have an account and can sign in manually.
+  const [registeredEmail, setRegisteredEmail] = useState<string | null>(null);
+
+  /**
+   * Single source of truth for resetting all form state.
+   * Called by every mode-switch trigger so new state additions
+   * only need to be handled here.
+   */
+  const resetForm = useCallback(() => {
+    setLoginEmail('');
+    setFullName('');
+    setEmail('');
+    setPassword('');
+    setError('');
+    setRegisteredEmail(null);
+    setLoading(false);
+  }, []);
+
+  /** Switch modes and always start with a clean slate. */
+  const switchMode = useCallback((next: 'login' | 'register') => {
+    resetForm();
+    setMode(next);
+  }, [resetForm]);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -22,22 +47,38 @@ export default function LoginPage() {
 
     try {
       if (mode === 'login') {
-        const data = await auth.login(nameOrEmail, password);
+        const data = await auth.login(loginEmail, password);
         localStorage.setItem('token', data.access_token);
-        router.push('/');
+        router.push('/dashboard');
       } else {
-        await auth.register({
-          full_name: nameOrEmail,
-          email,
-          password,
-        });
+        // ── Step 1: register ──────────────────────────────────────────────
+        try {
+          await auth.register({ full_name: fullName, email, password });
+        } catch (regErr: any) {
+          setError(regErr.message || 'Registration failed');
+          setLoading(false);
+          return;
+        }
 
-        const data = await auth.login(email, password);
-        localStorage.setItem('token', data.access_token);
-        router.push('/');
+        // ── Step 2: auto-login ───────────────────────────────────────────
+        try {
+          const data = await auth.login(email, password);
+          localStorage.setItem('token', data.access_token);
+          router.push('/dashboard');
+        } catch {
+          // Registration succeeded but auto-login failed.
+          // Drop the user into login mode with a clear message.
+          setRegisteredEmail(email);
+          setMode('login');
+          setLoginEmail(email);
+          setPassword('');
+          setFullName('');
+          setEmail('');
+          setError(
+            'Account created! Auto sign-in failed — please sign in manually.'
+          );
+        }
       }
-    } catch (err: any) {
-      setError(err.message || 'Authentication failed');
     } finally {
       setLoading(false);
     }
@@ -88,10 +129,8 @@ export default function LoginPage() {
             <button
               key={m}
               type="button"
-              onClick={() => {
-                setMode(m);
-                setError('');
-              }}
+              onClick={() => switchMode(m)}
+              disabled={mode === m}
               style={{
                 flex: 1,
                 padding: '8px 0',
@@ -103,6 +142,7 @@ export default function LoginPage() {
                 color: mode === m ? 'var(--text)' : 'var(--text-muted)',
                 transition: 'all 0.2s',
                 boxShadow: mode === m ? '0 2px 8px rgba(0,0,0,0.3)' : 'none',
+                cursor: mode === m ? 'default' : 'pointer',
               }}
             >
               {m === 'login' ? 'Sign In' : 'Register'}
@@ -119,8 +159,10 @@ export default function LoginPage() {
               className="form-input"
               type={mode === 'login' ? 'email' : 'text'}
               placeholder={mode === 'login' ? 'ritisha@example.com' : 'Ritisha Jadhao'}
-              value={nameOrEmail}
-              onChange={(e) => setNameOrEmail(e.target.value)}
+              value={mode === 'login' ? loginEmail : fullName}
+              onChange={(e) =>
+                mode === 'login' ? setLoginEmail(e.target.value) : setFullName(e.target.value)
+              }
               required
               autoFocus
             />
@@ -160,11 +202,15 @@ export default function LoginPage() {
           {error && (
             <div
               style={{
-                background: 'rgba(255,90,90,0.08)',
-                border: '1px solid rgba(255,90,90,0.2)',
+                background: registeredEmail
+                  ? 'rgba(16,185,129,0.08)'
+                  : 'rgba(255,90,90,0.08)',
+                border: `1px solid ${registeredEmail
+                  ? 'rgba(16,185,129,0.3)'
+                  : 'rgba(255,90,90,0.2)'}`,
                 borderRadius: 8,
                 padding: '10px 14px',
-                color: 'var(--red)',
+                color: registeredEmail ? 'var(--green)' : 'var(--red)',
                 fontSize: 13,
                 marginBottom: 16,
                 display: 'flex',
@@ -172,7 +218,7 @@ export default function LoginPage() {
                 gap: 8,
               }}
             >
-              <span>⚠</span> {error}
+              <span>{registeredEmail ? '✓' : '⚠'}</span> {error}
             </div>
           )}
 
@@ -200,10 +246,7 @@ export default function LoginPage() {
           {mode === 'login' ? "Don't have an account? " : 'Already have an account? '}
           <button
             type="button"
-            onClick={() => {
-              setMode(mode === 'login' ? 'register' : 'login');
-              setError('');
-            }}
+            onClick={() => switchMode(mode === 'login' ? 'register' : 'login')}
             style={{
               background: 'none',
               border: 'none',

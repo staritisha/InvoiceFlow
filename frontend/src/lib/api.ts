@@ -1,39 +1,109 @@
+import { ApiError, TIMEOUT_STATUS, TIMEOUT_MESSAGE } from "./errors";
+
 const BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000/api/v1";
 
-async function request(path: string, options: RequestInit = {}) {
+/** Default request timeout in milliseconds (covers Render cold-start latency). */
+const DEFAULT_TIMEOUT_MS = 15_000;
+
+/**
+ * Core fetch wrapper.
+ *
+ * @param path        API path, e.g. "/auth/login"
+ * @param options     Standard RequestInit options
+ * @param timeoutMs   Per-request timeout override. Pass 0 to disable entirely.
+ *                    Defaults to DEFAULT_TIMEOUT_MS (15 s).
+ *
+ * Throws ApiError on:
+ *   - timeout          → err.isTimeout === true,  err.message = TIMEOUT_MESSAGE
+ *   - network failure  → err.isNetworkError === true
+ *   - non-2xx HTTP     → err.status = HTTP code, err.message = parsed detail
+ */
+async function request(
+  path: string,
+  options: RequestInit = {},
+  timeoutMs: number = DEFAULT_TIMEOUT_MS
+) {
   const token =
     typeof window !== "undefined" ? localStorage.getItem("token") : null;
 
-  const res = await fetch(`${BASE_URL}${path}`, {
-    ...options,
-    headers: {
-      "Content-Type": "application/json",
-      ...(token && { Authorization: `Bearer ${token}` }),
-      ...(options.headers || {}),
-    },
-  });
+  // ── AbortController wiring ─────────────────────────────────────────────────
+  const controller = new AbortController();
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
 
-  const data = await res.json();
+  if (timeoutMs > 0) {
+    timeoutId = setTimeout(() => controller.abort("timeout"), timeoutMs);
+  }
+
+  let res: Response;
+  try {
+    res = await fetch(`${BASE_URL}${path}`, {
+      ...options,
+      signal: controller.signal,
+      headers: {
+        "Content-Type": "application/json",
+        ...(token && { Authorization: `Bearer ${token}` }),
+        ...(options.headers || {}),
+      },
+    });
+  } catch (err) {
+    // Distinguish an AbortController timeout from a genuine network failure.
+    // fetch rejects with a DOMException named "AbortError" on abort.
+    if (
+      err instanceof DOMException && err.name === "AbortError"
+    ) {
+      throw new ApiError(TIMEOUT_STATUS, TIMEOUT_MESSAGE);
+    }
+    // Network failure — no HTTP response at all (offline, DNS failure, CORS, etc.)
+    throw new ApiError(0, "Unable to reach the server. Please check your connection.");
+  } finally {
+    // Always clear the timer to prevent it firing after a successful response.
+    clearTimeout(timeoutId);
+  }
+
+  // Parse body — guard against non-JSON responses (e.g. 502 HTML gateway pages)
+  let data: unknown;
+  try {
+    data = await res.json();
+  } catch {
+    // Response body is not valid JSON (e.g. empty 204, plain-text 500)
+    if (!res.ok) throw new ApiError(res.status, null);
+    return null;
+  }
 
   if (!res.ok) {
-    throw new Error(data.detail || "Request failed");
+    throw new ApiError(res.status, data);
   }
 
   return data;
 }
 
-export const auth = {
-login: (email: string, password: string) =>
-  request("/auth/login", {
-    method: "POST",
-    body: JSON.stringify({ email, password }),
-  }),
+export type LoginResponse = {
+  access_token: string;
+  refresh_token: string;
+  token_type: string;
+  expires_in: number;
+};
 
-register: (data: { full_name: string; email: string; password: string }) =>
-  request("/auth/register", {
-    method: "POST",
-    body: JSON.stringify(data),
-  }),
+export type RegisterResponse = {
+  id: number;
+  full_name: string;
+  email: string;
+  role: string;
+  is_active: boolean;
+};
+
+export const auth = {
+  login: (email: string, password: string): Promise<LoginResponse> =>
+    request("/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ email, password }),
+    }),
+
+  register: (data: { full_name: string; email: string; password: string }): Promise<RegisterResponse> =>
+    request("/auth/register", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
 };
 
 export type Customer = {
@@ -182,10 +252,12 @@ export const invoices = {
 
 export const dashboard = {
   analytics: async () => {
+    // Fan-out: 3 parallel requests. Allow 20 s to accommodate Render cold starts
+    // plus the time for all three to complete.
     const [summary, invoiceList, monthlyData] = await Promise.all([
-      request("/dashboard/summary"),
+      request("/dashboard/summary", {}, 20_000),
       invoices.list(),
-      request("/dashboard/monthly-revenue"),
+      request("/dashboard/monthly-revenue", {}, 20_000),
     ]);
 
     return {

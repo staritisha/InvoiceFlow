@@ -27,9 +27,14 @@ const MOCK_ACTIONS = [
 ];
 
 async function callAI(messages: { role: string; content: string }[]): Promise<string> {
+  // Anthropic API can take time under load — allow 30 s before giving up.
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 30_000);
+
   try {
     const res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
+      signal: controller.signal,
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         model: 'claude-sonnet-4-20250514',
@@ -43,8 +48,13 @@ Format responses clearly with bullet points or short paragraphs. Be confident an
     });
     const data = await res.json();
     return data.content?.[0]?.text || 'I couldn\'t process that request. Please try again.';
-  } catch {
+  } catch (err) {
+    if (err instanceof DOMException && err.name === 'AbortError') {
+      return 'The request timed out. Please try again.';
+    }
     return 'Connection issue. Please check your network and try again.';
+  } finally {
+    clearTimeout(timeoutId);
   }
 }
 
